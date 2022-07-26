@@ -21,6 +21,9 @@ def df_2_geovector(data_frame, vector, prefix='geometry', outdir='artifact', vec
 
 
 def read_vector_data(vector_file):
+    if not os.path.isfile(vector_file):
+        logging.error("{} file not found".format(vector_file))
+        return
     vector_df = gpd.read_file(vector_file)
     vector_df = gpd.GeoDataFrame(vector_df, crs="EPSG:4326", geometry='geometry')
     vector_df = vector_df.to_crs("epsg:4326")
