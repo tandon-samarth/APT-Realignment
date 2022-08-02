@@ -28,3 +28,18 @@ def read_vector_data(vector_file):
     vector_df = gpd.GeoDataFrame(vector_df, crs="EPSG:4326", geometry='geometry')
     vector_df = vector_df.to_crs("epsg:4326")
     return vector_df
+
+def create_logger():
+    formatter = logging.Formatter('%(asctime)s:%(levelname)s:- %(message)s')
+
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    console_handler.setFormatter(formatter)
+
+    logger = logging.getLogger("APT_Realignment")
+    logger.setLevel(logging.INFO)
+
+    if not logger.hasHandlers():
+        logger.addHandler(console_handler)
+    logger.propagate = False
+    return logger

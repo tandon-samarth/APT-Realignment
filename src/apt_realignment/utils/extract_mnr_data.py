@@ -1,6 +1,6 @@
 import os
 import sys
-import uuid
+
 from shapely import wkt
 from shapely.geometry import Point, MultiPoint
 import geopandas as gpd
@@ -8,7 +8,9 @@ import psycopg2
 import logging
 import pandas as pd
 import numpy as np
+import time
 from sqlalchemy import create_engine
+from geometric_utils import create_logger
 
 try:
     import pycoredb
@@ -21,15 +23,20 @@ except ImportWarning as warning:
 """
 Get details from http://specs.tomtomgroup.com/specification/mnr-r_daily/internal/mnr_support_spec/mnr_user_guide/getting_started/mnr_custom_tables/custom_tables_2.html
 """
+
+
 class ExtractMNRData:
     def __init__(self, country_code, username="mnr_ro", password="mnr_ro", database_name='mnr',
                  databse_server='caprod-cpp-pgmnr-002.flatns.net'):
-        self._username = username
-        self._password = password
+        self.__username__ = username
+        self.__password__ = password
+        self.__logger__ = create_logger()
         self.country_code = country_code
         self.host = databse_server
         self.database_name = database_name
         self.connection = self.connect_to_server()
+        if self.connection:
+            self.__logger__.info("Data base Connection Successful")
 
     def connect_to_server(self):
         """
@@ -38,32 +45,33 @@ class ExtractMNRData:
         """
         connection = None
         alchemyengine = create_engine(
-            f'postgresql+psycopg2://{self._username}:{self._password}@{self.host}/{self.database_name}')
+            f'postgresql+psycopg2://{self.__username__}:{self.__password__}@{self.host}/{self.database_name}')
         try:
             connection = alchemyengine.connect()
         except (Exception, psycopg2.DatabaseError) as error:
-            logging.error(error)
+            self.__logger__.error("{}".format(error))
         return connection
 
     def extract_apt_addresses_data(self, ):
         """
-        Extract TomTom's Anchor point from MNR Database with complete adress information using SQL Query
+        Extract TomTom's Anchor point from MNR Database with complete address information using SQL Query
         :return: pandas Dataframe
         """
         sql_query = "SET search_path TO {}, public;" \
-                    "SELECT mnr_apt.feat_id, ST_AsText(mnr_apt.geom), mnr_address.iso_script, mnr_address.iso_lang_code, " \
+                    "select mnr_apt.feat_id, ST_AsText(mnr_apt.geom), " \
+                    "mnr_address.iso_script, mnr_address.iso_lang_code, " \
                     "postal_code.postal_code as postal_code," \
                     "house_number.hsn as house_number," \
-                    "door.name as door," \
-                    "floor_id.name as floor_id," \
-                    "country_name.name as country_name," \
                     "state_province_code.name as state_province_code," \
-                    "place_name.name as place_name," \
+                    "place_name.name as locality," \
                     "street_name.name as street_name," \
-                    "country_code.name as country_code, " \
-                    "street_name.nc_prefix as sn_prefix, " \
-                    "street_name.nc_suffix as sn_suffix " \
-                    "FROM mnr_apt join mnr_apt2addressset on mnr_apt.feat_id = mnr_apt2addressset.apt_id " \
+                    "country_code.name as country_code," \
+                    "street_name.nc_prefix as prefix," \
+                    "street_name.nc_suffix as suffix," \
+                    "street_name.nc_predir as predir," \
+                    "street_name.nc_postdir as postdir," \
+                    "street_name.nc_body as sn_body " \
+                    "from mnr_apt join mnr_apt2addressset on mnr_apt.feat_id = mnr_apt2addressset.apt_id " \
                     "join mnr_address on mnr_apt2addressset.addressset_id = mnr_address.addressset_id " \
                     "left join mnr_postal_point as postal_code on mnr_address.postal_code_id = postal_code.feat_id " \
                     "left join mnr_hsn as house_number on mnr_address.house_number_id = house_number.hsn_id " \
@@ -81,11 +89,14 @@ class ExtractMNRData:
                     "left join mnr_name as dsn on mnr_address.dependent_street_name_id = dsn.name_id " \
                     "left join mnr_name as street_number on mnr_address.street_number_id = street_number.name_id " \
                     "left join mnr_name as country_code on mnr_address.country_code_id = country_code.name_id " \
-                    "left join mnr_name as state_province_code on mnr_address.state_province_code_id = state_province_code.name_id".format(
-            self.country_code)
+                    "left join mnr_name as state_province_code on " \
+                    "mnr_address.state_province_code_id = state_province_code.name_id ".format(self.country_code)
+        self.__logger__.info("Running SQL query on {} schema".format(self.country_code))
+        stime = time.time()
         dataframe = pd.read_sql(sql_query, self.connection)
         # convert featureID  to string
         dataframe['feat_id'] = dataframe['feat_id'].apply(lambda x: x.hex)
+        self.__logger__.info("APT Data Downloaded Took {:.2f} min".format((time.time() - stime) / 60.0))
         return dataframe
 
     @staticmethod
@@ -169,8 +180,8 @@ def download_apt_elements(shape_file, out_path):
 
 
 if __name__ == '__main__':
-    mnr_database = ExtractMNRData(country_code='_2022_06_009_nam_usa_uca')
+    mnr_database = ExtractMNRData(country_code='_2022_06_009_nam_usa_ugx')
     mnr_database.connect_to_server()
-    out_path = '/mnt/c/Users/tandon/OneDrive - TomTom/Desktop/tomtom/Workspace/01_Rooftop_accuracy/BFP_Analysis_USA/data/California/MNR_data'
+    out_path = '/mnt/c/Users/tandon/OneDrive - TomTom/Desktop/tomtom/Workspace/01_Rooftop_accuracy/BFP_Analysis_USA/data/data/Georgia/'
     mnr_apt_df = mnr_database.extract_apt_addresses_data()
-    mnr_database.save_dataframe_as_shpfile(mnr_apt_df, out_path, filename='APT_2022_06_009_nam_usa_uca.shp')
+    mnr_database.save_dataframe_as_shpfile(mnr_apt_df, out_path, filename='APT_2022_06_009_nam_usa_ugx.shp')
