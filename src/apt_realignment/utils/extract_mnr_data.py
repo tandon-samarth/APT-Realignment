@@ -58,20 +58,20 @@ class ExtractMNRData:
         :return: pandas Dataframe
         """
         sql_query = "SET search_path TO {}, public;" \
-                    "select mnr_apt.feat_id, ST_AsText(mnr_apt.geom), " \
+                    "SELECT mnr_apt.feat_id::TEXT, ST_AsText(mnr_apt.geom), " \
                     "mnr_address.iso_script, mnr_address.iso_lang_code, " \
-                    "postal_code.postal_code as postal_code," \
-                    "house_number.hsn as house_number," \
+                    "postal_code.postal_code as postal_code, " \
+                    "house_number.hsn as house_number, " \
                     "state_province_code.name as state_province_code," \
-                    "place_name.name as locality," \
-                    "street_name.name as street_name," \
-                    "country_code.name as country_code," \
-                    "street_name.nc_prefix as prefix," \
-                    "street_name.nc_suffix as suffix," \
-                    "street_name.nc_predir as predir," \
-                    "street_name.nc_postdir as postdir," \
+                    "place_name.name as locality, " \
+                    "street_name.name as street_name, " \
+                    "country_code.name as country_code, " \
+                    "street_name.nc_prefix as prefix, " \
+                    "street_name.nc_suffix as suffix, " \
+                    "street_name.nc_predir as predir, " \
+                    "street_name.nc_postdir as postdir, " \
                     "street_name.nc_body as sn_body " \
-                    "from mnr_apt join mnr_apt2addressset on mnr_apt.feat_id = mnr_apt2addressset.apt_id " \
+                    "FROM mnr_apt join mnr_apt2addressset on mnr_apt.feat_id = mnr_apt2addressset.apt_id " \
                     "join mnr_address on mnr_apt2addressset.addressset_id = mnr_address.addressset_id " \
                     "left join mnr_postal_point as postal_code on mnr_address.postal_code_id = postal_code.feat_id " \
                     "left join mnr_hsn as house_number on mnr_address.house_number_id = house_number.hsn_id " \
@@ -91,11 +91,12 @@ class ExtractMNRData:
                     "left join mnr_name as country_code on mnr_address.country_code_id = country_code.name_id " \
                     "left join mnr_name as state_province_code on " \
                     "mnr_address.state_province_code_id = state_province_code.name_id ".format(self.country_code)
+
         self.__logger__.info("Running SQL query on {} schema".format(self.country_code))
         stime = time.time()
         dataframe = pd.read_sql(sql_query, self.connection)
         # convert featureID  to string
-        dataframe['feat_id'] = dataframe['feat_id'].apply(lambda x: x.hex)
+        # dataframe['feat_id'] = dataframe['feat_id'].apply(lambda x: str(x))
         self.__logger__.info("APT Data Downloaded Took {:.2f} min".format((time.time() - stime) / 60.0))
         return dataframe
 
@@ -180,8 +181,8 @@ def download_apt_elements(shape_file, out_path):
 
 
 if __name__ == '__main__':
-    mnr_database = ExtractMNRData(country_code='_2022_06_009_nam_usa_uco')
+    mnr_database = ExtractMNRData(country_code='_2022_06_010_nam_usa_ufl')
     mnr_database.connect_to_server()
-    out_path = '/mnt/c/Users/tandon/OneDrive - TomTom/Desktop/tomtom/Workspace/01_Rooftop_accuracy/BFP_Analysis_USA/data/data/Georgia/'
+    out_path = '/mnt/c/Users/tandon/OneDrive - TomTom/Desktop/tomtom/Workspace/01_Rooftop_accuracy/BFP_Analysis_USA/data/data/Florida'
     mnr_apt_df = mnr_database.extract_apt_addresses_data()
-    mnr_database.save_dataframe_as_shpfile(mnr_apt_df, out_path, filename='APT_2022_06_009_nam_usa_ugx.shp')
+    mnr_database.save_dataframe_as_shpfile(mnr_apt_df, out_path, filename='APT_2022_06_009_nam_usa_ufl.shp')
