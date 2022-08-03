@@ -180,7 +180,7 @@ def download_apt_elements(shape_file, out_path):
 
 
 if __name__ == '__main__':
-    mnr_database = ExtractMNRData(country_code='_2022_06_009_nam_usa_ugx')
+    mnr_database = ExtractMNRData(country_code='_2022_06_009_nam_usa_uco')
     mnr_database.connect_to_server()
     out_path = '/mnt/c/Users/tandon/OneDrive - TomTom/Desktop/tomtom/Workspace/01_Rooftop_accuracy/BFP_Analysis_USA/data/data/Georgia/'
     mnr_apt_df = mnr_database.extract_apt_addresses_data()
