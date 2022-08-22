@@ -1,6 +1,9 @@
-import os
-import geopandas as gpd
 import logging
+import os
+
+import geopandas as gpd
+import numpy as np
+import shapely
 
 
 def df_2_geovector(data_frame, vector, prefix='geometry', outdir='artifact', vector_format='shp'):
@@ -29,6 +32,7 @@ def read_vector_data(vector_file):
     vector_df = vector_df.to_crs("epsg:4326")
     return vector_df
 
+
 def create_logger():
     formatter = logging.Formatter('%(asctime)s:%(levelname)s:- %(message)s')
 
@@ -43,3 +47,17 @@ def create_logger():
         logger.addHandler(console_handler)
     logger.propagate = False
     return logger
+
+def prep_polygons_asarr(gs):
+    def get_pts(poly):
+        if isinstance(poly, shapely.geometry.Polygon):
+            coords = np.array(poly.exterior.coords)
+        elif isinstance(poly, shapely.geometry.MultiPolygon):
+            coords = np.concatenate([get_pts(sp) for sp in poly.geoms])
+        return coords
+    return [get_pts(poly) for poly in gs]
+
+def get_nearest_poly(pt, polys):
+    polys = prep_polygons_asarr(polys)
+    dists = np.array([np.abs(np.linalg.norm(poly - pt, axis=1)).min() for poly in polys])
+    return dists.argmin()
