@@ -1,14 +1,16 @@
 import logging
 import os
-import warnings
 import os.path as osp
-import geopandas as gpd
-import pandas as pd
-import numpy as np
-from utils.haversine_distance import get_distance
-from utils.geometric_utils import read_vector_data, create_logger, get_nearest_poly
+import warnings
 
+import geopandas as gpd
+import numpy as np
+import pandas as pd
 from pyproj import Geod
+import argparse
+
+from utils.geometric_utils import read_vector_data, create_logger, get_nearest_poly
+from utils.haversine_distance import get_distance
 
 geod = Geod(ellps="WGS84")
 warnings.filterwarnings("ignore")
@@ -39,13 +41,13 @@ class ProcessGeometricData:
             process_df = process_df.groupby(['PRCLDMPID'], as_index=False).apply(
                 lambda x: pd.Series(self.process_multi_mapping(x)))
 
-        req_columns = self.apt_df_columns + ['PRCLDMPID','updated_geometries']
+        self.__logger.info("saving updated Geometries ...")
         process_df['updated_geometries'] = process_df['building_roi'].apply(lambda x: x.centroid)
-
-        print(process_df.keys)
-
+        process_df['APT_to_Centroid_distance'] = process_df.apply(lambda x: self.get_apt_to_bfp_distance(x),
+                                                                  axis=1)
+        req_columns = self.apt_df_columns + ['PRCLDMPID', 'updated_geometries', 'APT_to_Centroid_distance']
         filter_df = process_df[req_columns]
-        filter_df = filter_df.drop(['geometry'],axis=1)
+        filter_df = filter_df.drop(['geometry'], axis=1)
 
         filter_df['updated_lat'] = filter_df['updated_geometries'].apply(lambda z: z.y)
         filter_df['updated_lon'] = filter_df['updated_geometries'].apply(lambda z: z.x)
@@ -62,18 +64,20 @@ class ProcessGeometricData:
 
             pd_dataframe = pd.DataFrame(geo_dataframe)
             pd_dataframe.to_pickle(os.path.join(result_path, filename + '.pkl'))
+
+            geo_dataframe.to_file(driver='ESRI Shapefile', filename=os.path.join(result_path, filename + '.shp'))
             self.__logger.info("File saved at {}".format(os.path.join(result_path, filename + '.pkl')))
         return process_df
 
     def get_apt_to_bfp_distance(self, data):
         anchor_point = data['APT']
-        bfp_centroid = data['updated_APT']
+        bfp_centroid = data['updated_geometries']
         return get_distance(anchor_point, bfp_centroid)
 
     def get_bfp_parcel_overlap(self):
         self.__logger.info("Processing Land Parcel data and Building Footprints ")
         if not osp.isfile(self.__land_parcels) and osp.isfile(self.__building_footprints):
-            self.__logger("File path not correct ")
+            self.__logger.info("File path/paths are not correct ")
             raise
         land_parcel_df = read_vector_data(self.__land_parcels)
         footprint_df = read_vector_data(self.__building_footprints)
@@ -97,11 +101,11 @@ class ProcessGeometricData:
             return building_roi
 
         building_within_parcel_df['building_geometry'] = building_within_parcel_df['index_right'].apply(
-            lambda x: __get_buildingfootprint(x))
+                                                                                lambda x: __get_buildingfootprint(x))
         building_within_parcel_df['building_roi'] = building_within_parcel_df.apply(
-            lambda x: __get_building_roi(x), axis=1)
+                                                                            lambda x: __get_building_roi(x), axis=1)
         building_within_parcel_df = building_within_parcel_df.drop(['index_right', 'capture_dates_range', 'release'],
-                                                                   axis=1)
+                                                                                                            axis=1)
         building_within_parcel_df = building_within_parcel_df.dropna()
         return building_within_parcel_df
 
@@ -122,7 +126,7 @@ class ProcessGeometricData:
     def get_parcel_anchorpoints(self, input_dataframe: gpd.GeoSeries):
         self.__logger.info("Processing Anchor-Points data over Parcel-Building Geo-Dataframe")
         if not osp.isfile(self.__anchor_points_data):
-            self.__logger("{} Path not found".format(self.__anchor_points_data))
+            self.__logger.info("{} Path not found".format(self.__anchor_points_data))
         anchorpoint_df = read_vector_data(self.__anchor_points_data)
         self.apt_df_columns = list(anchorpoint_df.columns)
         # find spatial join of input_dataframe with anchorpoint
@@ -141,7 +145,6 @@ class ProcessGeometricData:
         return self.check_point_on_polygon(bfp_polygon=building_roi, apt_point=anchor_point)
 
     def process_multi_mapping(self, x, area_thresh=150):
-        print("processing multi-mapping")
         ret = dict()
         req_columns = ['PRCLDMPID', 'building_roi', 'APT'] + self.apt_df_columns
         building_polygons = list(x['building_roi'][:2])
@@ -170,15 +173,18 @@ class ProcessGeometricData:
             flag = True
         return flag
 
-
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description=
+                                     'Create Realigned Matrix of APTs using MNR APT databse, DMP Parcels '
+                                     'and Building footprint')
+
     data_path = "/mnt/c/Users/tandon/OneDrive - TomTom/Desktop/tomtom/Workspace/01_Rooftop_accuracy/BFP_Analysis_USA/data/data"
-    state = "California"
-    city = "SantaClara"
-    apt_data_path = osp.join(data_path, state, "APT_2022_06_010_nam_usa_uca.shp")
-    parcel_path = osp.join(data_path, state, city, "Parcels_06085/Parcels_06085.shp")
-    building_geojson = osp.join(data_path, state, 'California.geojson')
+    state = "Texas"
+    city = "Bexar"
+    apt_data_path = osp.join(data_path, state, "APT_2022_09_000_nam_usa_utx.shp")
+    parcel_path = osp.join(data_path, state, city, "Parcels_48029/Parcels_48029.shp")
+    building_geojson = osp.join(data_path, state, 'Texas.geojson')
 
     apt_preprocess = ProcessGeometricData(parcel_shapefile=parcel_path, building_shapefile=building_geojson,
                                           apt_shape_file=apt_data_path)
-    processed_df = apt_preprocess.process_dataframe(bfp_count_per_parcel=2)
+    processed_df = apt_preprocess.process_dataframe(bfp_count_per_parcel=1)

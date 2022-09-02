@@ -5,6 +5,7 @@ from shapely import wkt
 from shapely.geometry import Point, MultiPoint
 import geopandas as gpd
 import psycopg2
+import argparse
 import logging
 import pandas as pd
 import numpy as np
@@ -180,9 +181,19 @@ def download_apt_elements(shape_file, out_path):
     return
 
 
-if __name__ == '__main__':
-    mnr_database = ExtractMNRData(country_code='_2022_06_012_nam_usa_utx')
+def main(args):
+    db_schema = args.schema
+    out_path = args.out
+    mnr_database = ExtractMNRData(country_code=db_schema)
     mnr_database.connect_to_server()
-    out_path = '/mnt/c/Users/tandon/OneDrive - TomTom/Desktop/tomtom/Workspace/01_Rooftop_accuracy/BFP_Analysis_USA/data/data/Texas'
+
     mnr_apt_df = mnr_database.extract_apt_addresses_data()
-    mnr_database.save_dataframe_as_shpfile(mnr_apt_df, out_path, filename='APT_2022_06_012_nam_usa_utx.shp')
+    mnr_database.save_dataframe_as_shpfile(mnr_apt_df, out_path, filename='APT_' + db_schema + '.shp')
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Extract APT from MNR database')
+    parser.add_argument('-s', '--schema',type=str, help='Schema code for USA or other counties from MNR database', required=True)
+    parser.add_argument('-o', '--out',type=str, help='Output path ', required=True)
+    args = parser.parse_args()
+    main(args)

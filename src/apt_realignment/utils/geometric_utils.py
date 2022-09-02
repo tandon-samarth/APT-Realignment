@@ -4,6 +4,7 @@ import os
 import geopandas as gpd
 import numpy as np
 import shapely
+from osgeo import gdal
 
 
 def df_2_geovector(data_frame, vector, prefix='geometry', outdir='artifact', vector_format='shp'):
@@ -21,6 +22,18 @@ def df_2_geovector(data_frame, vector, prefix='geometry', outdir='artifact', vec
     else:
         gdf.to_file(os.path.join(out_dir, "{}_{}.geojson".format(prefix, vector)), driver="GeoJSON")
     return
+
+def geojson2shpfile(geojson_file,crs='epsg:4326',verbose=0):
+    logger = create_logger()
+    if verbose:
+        logger.info("Reading {} ...".format(os.path.basename(geojson_file)))
+    srcDS = gpd.read_file(geojson_file)
+    if verbose:
+        logger.info("converting to {}".format(crs))
+    srcDS = srcDS.to_crs(crs)
+    srcDS.to_file(geojson_file.split('.')[0]+'.shp', driver="ESRI Shapefile")
+    return 0
+
 
 
 def read_vector_data(vector_file):
