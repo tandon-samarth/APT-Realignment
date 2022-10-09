@@ -6,6 +6,22 @@ import numpy as np
 import shapely
 from osgeo import gdal
 
+def download_osm_building_footprint(place_name, state, country='USA', out_path='results'):
+    tags = {"building": True}
+    try:
+        import osmnx as ox
+    except ImportError as err:
+        raise err
+    gdf = ox.geometries_from_place(place_name, tags)
+    gdf['building_geometry'] = gdf['geometry'].apply(
+        lambda x: x if isinstance(x, shapely.geometry.polygon.Polygon) else None)
+    bfp_gdf = gdf[['building_geometry']]
+    bfp_gdf.dropna(inplace=True)
+    bfp_gdf.reset_index(inplace=True)
+    bfp_gdf = bfp_gdf[['osmid', 'building_geometry']]
+    bfp_gdf = gpd.GeoDataFrame(bfp_gdf, geometry='building_geometry', crs="EPSG:4326")
+    return bfp_gdf
+
 
 def df_2_geovector(data_frame, vector, prefix='geometry', outdir='artifact', vector_format='shp'):
     gdf = gpd.GeoDataFrame(data_frame[vector], crs="epsg:4326", geometry=vector)
