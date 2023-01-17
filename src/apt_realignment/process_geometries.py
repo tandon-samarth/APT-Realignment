@@ -1,73 +1,87 @@
-import logging
-import os
-import os.path as osp
-import warnings
-
-import geopandas as gpd
-import numpy as np
-import pandas as pd
-from pyproj import Geod
 import argparse
 
-from utils.geometric_utils import read_vector_data, create_logger, get_nearest_poly
+from glob import glob
+import geopandas as gpd
+import logging
+import numpy as np
+import os
+import os.path as osp
+import pandas as pd
+
+import shapely.geos
+from pyproj import Geod
+import time
+import warnings
+
+warnings.filterwarnings("ignore")
+
+from utils.geometric_utils import read_vector_data, create_logger, get_nearest_poly, save_geodataframe, \
+    extract_zip_files
 from utils.haversine_distance import get_distance
 
 geod = Geod(ellps="WGS84")
-warnings.filterwarnings("ignore")
 
 
 class ProcessGeometricData:
-    def __init__(self, parcel_shapefile, building_shapefile, apt_shape_file, output_path=None, meta_info=False):
+    def __init__(self, building_shapefile, apt_shape_file, output_path=None, meta_info=False):
+
         self.out_path = output_path
 
-        self.__land_parcels = parcel_shapefile
+        self.__land_parcels = None
         self.__building_footprints = building_shapefile
-        self.__anchor_points_data = apt_shape_file
 
         self.apt_df_columns = list()
         self.__meta_data__ = meta_info
         self.__logger = create_logger()
 
-    def process_dataframe(self, bfp_count_per_parcel=1, save_df=True, filename='APT_realigned'):
-        self.__logger.info("Processing APT's with {} BFP-Count Per Parcel".format(bfp_count_per_parcel))
+        self.__logger.info("Reading {}".format(osp.basename(apt_shape_file)))
+        self.anchorpoint_df = read_vector_data(apt_shape_file)
 
+    def process_dataframe(self, parcel_shapefile, complexity=1, save_df=True, filename='APT_realigned'):
+        self.__land_parcels = parcel_shapefile
+        self.__logger.info("Starting Process with complexity upto {} BFP-Count Per Parcel".format(complexity))
         bfp_intersection_parcel_df = self.get_bfp_parcel_overlap()
 
-        df_parcel_within_bfp = self.get_buildings_within_parcel(bfp_intersection_parcel_df, count=bfp_count_per_parcel)
-        # read Anchor points Data
-        process_df = self.get_parcel_anchorpoints(df_parcel_within_bfp)
+        s_time = time.time()
+        for bfp_count_per_parcel in range(1, complexity + 1):
+            self.__logger.info("Processing with complexity {} BFP-Count Per Parcel".format(bfp_count_per_parcel))
+            df_parcel_within_bfp = self.get_buildings_within_parcel(bfp_intersection_parcel_df,
+                                                                    count=bfp_count_per_parcel)
+            process_df = self.get_parcel_anchorpoints(df_parcel_within_bfp)  # read Anchor points Data
 
-        if bfp_count_per_parcel == 2:
-            process_df = process_df.groupby(['PRCLDMPID'], as_index=False).apply(
-                lambda x: pd.Series(self.process_multi_mapping(x)))
+            if bfp_count_per_parcel >= 2:
+                process_df = process_df.groupby(['PRCLDMPID'], as_index=False).apply(
+                    lambda x: pd.Series(self.multi_map(x, bfp_count=bfp_count_per_parcel)))
 
-        self.__logger.info("saving updated Geometries ...")
-        process_df['updated_geometries'] = process_df['building_roi'].apply(lambda x: x.centroid)
-        process_df['APT_to_Centroid_distance'] = process_df.apply(lambda x: self.get_apt_to_bfp_distance(x),
-                                                                  axis=1)
-        req_columns = self.apt_df_columns + ['PRCLDMPID', 'updated_geometries', 'APT_to_Centroid_distance']
-        filter_df = process_df[req_columns]
-        filter_df = filter_df.drop(['geometry'], axis=1)
+            process_df['updated_geometries'] = process_df['building_roi'].apply(lambda x: x.centroid)
+            process_df['apt_bfp_dist'] = process_df.apply(lambda x: self.get_apt_to_bfp_distance(x), axis=1)
+            req_columns = self.apt_df_columns + ['PRCLDMPID', 'updated_geometries', 'apt_bfp_dist']
 
-        filter_df['updated_lat'] = filter_df['updated_geometries'].apply(lambda z: z.y)
-        filter_df['updated_lon'] = filter_df['updated_geometries'].apply(lambda z: z.x)
+            filter_df = process_df[req_columns]
+            filter_df = filter_df.drop(['geometry'], axis=1)
 
-        if self.__meta_data__:
-            process_df['APT_on_Building_footprint'] = process_df.apply(lambda x: self.apt_at_rooftop(x), axis=1)
-            process_df['APT_to_Centroid_distance'] = process_df.apply(lambda x: self.get_apt_to_bfp_distance(x),
-                                                                      axis=1)
-        if save_df:
-            self.__logger.info("saving Realigned matrix..")
-            result_path = osp.join(self.out_path, 'APT_realign_{}_bfp2parcel'.format(bfp_count_per_parcel))
-            os.makedirs(result_path, exist_ok=True)
-            geo_dataframe = gpd.GeoDataFrame(filter_df, geometry='updated_geometries', crs="EPSG:4326")
+            if self.__meta_data__:
+                process_df['APT_on_Building_footprint'] = process_df.apply(lambda x: self.apt_at_rooftop(x), axis=1)
+                process_df['apt_bfp_dist'] = process_df.apply(lambda x: self.get_apt_to_bfp_distance(x), axis=1)
 
-            pd_dataframe = pd.DataFrame(geo_dataframe)
-            pd_dataframe.to_pickle(os.path.join(result_path, filename + '.pkl'))
+            if save_df:
+                self.__logger.info("saving {} data points ".format(filter_df.shape[0]))
+                dirname = "updated_geometries_bfp-count_" + str(bfp_count_per_parcel) + '_' + \
+                          osp.basename(self.__land_parcels).split('.')[0]
+                result_path = osp.join(self.out_path, dirname)
+                os.makedirs(result_path, exist_ok=True)
+                save_geodataframe(filter_df, shp=True, out_dir=result_path, filename=filename)
 
-            geo_dataframe.to_file(driver='ESRI Shapefile', filename=os.path.join(result_path, filename + '.shp'))
-            self.__logger.info("File saved at {}".format(os.path.join(result_path, filename + '.pkl')))
-        return process_df
+                self.__logger.info(
+                    "File saved at {}".format(os.path.join(result_path, filename + str(complexity) + '.pkl')))
+
+            del df_parcel_within_bfp
+            del process_df
+            del filter_df
+
+        time_delta = round((time.time() - s_time) / 60, 2)
+        self.__logger.info("Total time to complete the process: {} min.".format(time_delta))
+        return
 
     def get_apt_to_bfp_distance(self, data):
         anchor_point = data['APT']
@@ -75,12 +89,12 @@ class ProcessGeometricData:
         return get_distance(anchor_point, bfp_centroid)
 
     def get_bfp_parcel_overlap(self):
-        self.__logger.info("Processing Land Parcel data and Building Footprints ")
-        if not osp.isfile(self.__land_parcels) and osp.isfile(self.__building_footprints):
-            self.__logger.info("File path/paths are not correct ")
-            raise
-        land_parcel_df = read_vector_data(self.__land_parcels)
+        self.__logger.info("Reading Building Footprint {}".format(osp.basename(self.__building_footprints)))
         footprint_df = read_vector_data(self.__building_footprints)
+        self.__logger.info("reading Land Parcels {}".format(osp.basename(self.__land_parcels)))
+        land_parcel_df = read_vector_data(self.__land_parcels)
+
+        self.__logger.info("Processing Land Parcel data and Building Footprints ")
         building_within_parcel_df = gpd.sjoin(land_parcel_df, footprint_df, op='intersects', how='left')
         building_within_parcel_df = building_within_parcel_df.dropna()  # drop columns with no Buildings
 
@@ -92,21 +106,25 @@ class ProcessGeometricData:
             parcel_polygon = data['geometry']
             building_roi = None
             try:
+                if building_polygon == np.nan:
+                    building_roi = parcel_polygon
                 if building_polygon.area > parcel_polygon.area:
                     building_roi = parcel_polygon.intersection(building_polygon)
                 else:
                     building_roi = building_polygon
-            except:
-                logging.error("error for {},{}".format(building_polygon, parcel_polygon))
+            except shapely.geos.TopologicalError as err:
+                logging.error("{} for {}".format(err, building_polygon))
             return building_roi
 
         building_within_parcel_df['building_geometry'] = building_within_parcel_df['index_right'].apply(
-                                                                                lambda x: __get_buildingfootprint(x))
+            lambda x: __get_buildingfootprint(x))
+        del footprint_df
+
         building_within_parcel_df['building_roi'] = building_within_parcel_df.apply(
-                                                                            lambda x: __get_building_roi(x), axis=1)
-        building_within_parcel_df = building_within_parcel_df.drop(['index_right', 'capture_dates_range', 'release'],
-                                                                                                            axis=1)
+            lambda x: __get_building_roi(x), axis=1)
+        building_within_parcel_df = building_within_parcel_df.drop(['index_right'], axis=1)
         building_within_parcel_df = building_within_parcel_df.dropna()
+
         return building_within_parcel_df
 
     def get_buildings_within_parcel(self, data: gpd.GeoSeries, count=None):
@@ -124,16 +142,13 @@ class ProcessGeometricData:
         return filtered_dataframe
 
     def get_parcel_anchorpoints(self, input_dataframe: gpd.GeoSeries):
-        self.__logger.info("Processing Anchor-Points data over Parcel-Building Geo-Dataframe")
-        if not osp.isfile(self.__anchor_points_data):
-            self.__logger.info("{} Path not found".format(self.__anchor_points_data))
-        anchorpoint_df = read_vector_data(self.__anchor_points_data)
-        self.apt_df_columns = list(anchorpoint_df.columns)
+        self.apt_df_columns = list(self.anchorpoint_df.columns)
+        self.__logger.info("Processing Anchor-Points and Parcel-Building Geo-Dataframe")
         # find spatial join of input_dataframe with anchorpoint
-        grouped_df = gpd.sjoin(input_dataframe, anchorpoint_df, op='contains', how='inner')
+        grouped_df = gpd.sjoin(input_dataframe, self.anchorpoint_df, op='contains', how='inner')
 
         def _get_apt_point(val):
-            return anchorpoint_df['geometry'].loc[val]
+            return self.anchorpoint_df['geometry'].loc[val]
 
         grouped_df['APT'] = grouped_df['index_right'].apply(lambda x: _get_apt_point(x))
         grouped_df = grouped_df.drop(['index_right'], axis=1)
@@ -144,26 +159,38 @@ class ProcessGeometricData:
         anchor_point = data['APT']
         return self.check_point_on_polygon(bfp_polygon=building_roi, apt_point=anchor_point)
 
-    def process_multi_mapping(self, x, area_thresh=150):
+    def multi_map(self, x, area_thresh=150, bfp_count=2):
         ret = dict()
         req_columns = ['PRCLDMPID', 'building_roi', 'APT'] + self.apt_df_columns
-        building_polygons = list(x['building_roi'][:2])
         for cols in req_columns:
             ret[cols] = x.iloc[0][cols]
-        geo_area = list(x['building_roi'].apply(lambda poly: abs(geod.geometry_area_perimeter(poly)[0])))[:2]
-        area_diff = geo_area[0] - geo_area[1]
-        if area_diff > 0:
-            if area_diff > area_thresh:
-                ret['building_roi'] = building_polygons[0]
-            else:
-                ret['building_roi'] = (
-                    list(x['building_roi'][:2])[get_nearest_poly(list(x['APT'])[0], building_polygons)])
-        elif area_diff <= 0:
-            if np.abs(area_diff) > area_thresh:
-                ret['building_roi'] = building_polygons[1]
-            else:
-                ret['building_roi'] = (
-                    list(x['building_roi'][:2])[get_nearest_poly(list(x['APT'])[0], building_polygons)])
+
+        if bfp_count == 2:
+            building_polygons = list(x['building_roi'][:2])
+            geo_area = list(x['building_roi'].apply(lambda poly: abs(geod.geometry_area_perimeter(poly)[0])))[:2]
+            area_diff = geo_area[0] - geo_area[1]
+            if area_diff > 0:
+                if area_diff > area_thresh:
+                    ret['building_roi'] = building_polygons[0]
+                else:
+                    ret['building_roi'] = (
+                        list(x['building_roi'][:2])[get_nearest_poly(list(x['APT'])[0], building_polygons)])
+            elif area_diff <= 0:
+                if np.abs(area_diff) > area_thresh:
+                    ret['building_roi'] = building_polygons[1]
+                else:
+                    ret['building_roi'] = (
+                        list(x['building_roi'][:2])[get_nearest_poly(list(x['APT'])[0], building_polygons)])
+        if bfp_count > 2:
+            building_polygons = list(x['building_roi'][:3])
+            mnr_apt = list(x['APT'])[0]
+            point_on_polygon = False
+
+            for polygon in building_polygons:
+                if self.check_point_on_polygon(polygon, mnr_apt):
+                    point_on_polygon = True
+            if not point_on_polygon:
+                ret['building_roi'] = (list(x['building_roi'][:3])[get_nearest_poly(mnr_apt, building_polygons)])
         return ret
 
     @staticmethod
@@ -173,18 +200,46 @@ class ProcessGeometricData:
             flag = True
         return flag
 
+    @staticmethod
+    def merge_data(apt_realignment_dir_path):
+        data = []
+        pkl_files = glob(apt_realignment_dir_path + '/*/*.pkl')
+        for pkl in pkl_files:
+            df = pd.read_pickle(pkl)
+            df = df.reset_index(drop=True)
+            data.append(df)
+        merge_df = pd.concat(data)
+        merge_df.to_pickle(os.path.join(apt_realignment_dir_path, 'FinalUpdated_APT.pkl'))
+
+
+def main(args):
+    parcel_path = osp.join(args.path, 'parcels')
+    apt_preprocess = ProcessGeometricData(building_shapefile=osp.join(args.path, args.msft_bfp),
+                                          apt_shape_file=osp.join(args.path, args.schema),
+                                          output_path=osp.join(args.path, args.out)
+                                          )
+    for parcels in os.listdir(parcel_path):
+        if parcels.endswith('.zip') and not osp.exists(osp.join(parcel_path, parcels.split('.')[0])):
+            print(parcels)
+            target_path = osp.join(parcel_path, parcels.split('.')[0])
+            try:
+                extract_zip_files(osp.join(parcel_path, parcels), target_path=target_path)
+            except IOError as err:
+                logging.info("{}! for parcel {} ".format(err,parcels))
+                continue
+            parcel_shp = osp.join(target_path, parcels.replace('.zip', '.shp'))
+            apt_preprocess.process_dataframe(parcel_shapefile=parcel_shp, complexity=2)
+
+
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=
                                      'Create Realigned Matrix of APTs using MNR APT databse, DMP Parcels '
                                      'and Building footprint')
-
-    data_path = "/mnt/c/Users/tandon/OneDrive - TomTom/Desktop/tomtom/Workspace/01_Rooftop_accuracy/BFP_Analysis_USA/data/data"
-    state = "Texas"
-    city = "Bexar"
-    apt_data_path = osp.join(data_path, state, "APT_2022_09_000_nam_usa_utx.shp")
-    parcel_path = osp.join(data_path, state, city, "Parcels_48029/Parcels_48029.shp")
-    building_geojson = osp.join(data_path, state, 'Texas.geojson')
-
-    apt_preprocess = ProcessGeometricData(parcel_shapefile=parcel_path, building_shapefile=building_geojson,
-                                          apt_shape_file=apt_data_path)
-    processed_df = apt_preprocess.process_dataframe(bfp_count_per_parcel=1)
+    parser.add_argument('-p', '--path', type=str, required=True, help='Path to the data')
+    parser.add_argument('-s', '--schema', type=str, required=True, help='name of the scema')
+    parser.add_argument('-m', '--msft_bfp', type=str, required=True, help='name of the BFP file in geojson/shp')
+    parser.add_argument('-o', '--out', type=str, default='Apt_realignment_MSFT', help='output path')
+    args = parser.parse_args()
+    main(args)
