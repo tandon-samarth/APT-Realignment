@@ -20,6 +20,7 @@ from utils.geometric_utils import read_vector_data, create_logger, get_nearest_p
 from utils.haversine_distance import get_distance
 
 geod = Geod(ellps="WGS84")
+logger = create_logger()
 
 
 class ProcessGeometricData:
@@ -32,19 +33,18 @@ class ProcessGeometricData:
 
         self.apt_df_columns = list()
         self.__meta_data__ = meta_info
-        self.__logger = create_logger()
 
-        self.__logger.info("Reading {}".format(osp.basename(apt_shape_file)))
+        logger.info("Reading {}".format(osp.basename(apt_shape_file)))
         self.anchorpoint_df = read_vector_data(apt_shape_file)
 
     def process_dataframe(self, parcel_shapefile, complexity=1, save_df=True, filename='APT_realigned'):
         self.__land_parcels = parcel_shapefile
-        self.__logger.info("Starting Process with complexity upto {} BFP-Count Per Parcel".format(complexity))
+        logger.info("Starting Process with complexity upto {} BFP-Count Per Parcel".format(complexity))
         bfp_intersection_parcel_df = self.get_bfp_parcel_overlap()
 
         s_time = time.time()
         for bfp_count_per_parcel in range(1, complexity + 1):
-            self.__logger.info("Processing with complexity {} BFP-Count Per Parcel".format(bfp_count_per_parcel))
+            logger.info("Processing with complexity {} BFP-Count Per Parcel".format(bfp_count_per_parcel))
             df_parcel_within_bfp = self.get_buildings_within_parcel(bfp_intersection_parcel_df,
                                                                     count=bfp_count_per_parcel)
             process_df = self.get_parcel_anchorpoints(df_parcel_within_bfp)  # read Anchor points Data
@@ -65,14 +65,14 @@ class ProcessGeometricData:
                 process_df['apt_bfp_dist'] = process_df.apply(lambda x: self.get_apt_to_bfp_distance(x), axis=1)
 
             if save_df:
-                self.__logger.info("saving {} data points ".format(filter_df.shape[0]))
+                logger.info("saving {} data points ".format(filter_df.shape[0]))
                 dirname = "updated_geometries_bfp-count_" + str(bfp_count_per_parcel) + '_' + \
                           osp.basename(self.__land_parcels).split('.')[0]
                 result_path = osp.join(self.out_path, dirname)
                 os.makedirs(result_path, exist_ok=True)
                 save_geodataframe(filter_df, shp=True, out_dir=result_path, filename=filename)
 
-                self.__logger.info(
+                logger.info(
                     "File saved at {}".format(os.path.join(result_path, filename + str(complexity) + '.pkl')))
 
             del df_parcel_within_bfp
@@ -80,7 +80,7 @@ class ProcessGeometricData:
             del filter_df
 
         time_delta = round((time.time() - s_time) / 60, 2)
-        self.__logger.info("Total time to complete the process: {} min.".format(time_delta))
+        logger.info("Total time to complete the process: {} min.".format(time_delta))
         return
 
     def get_apt_to_bfp_distance(self, data):
@@ -89,12 +89,12 @@ class ProcessGeometricData:
         return get_distance(anchor_point, bfp_centroid)
 
     def get_bfp_parcel_overlap(self):
-        self.__logger.info("Reading Building Footprint {}".format(osp.basename(self.__building_footprints)))
+        logger.info("Reading Building Footprint {}".format(osp.basename(self.__building_footprints)))
         footprint_df = read_vector_data(self.__building_footprints)
-        self.__logger.info("reading Land Parcels {}".format(osp.basename(self.__land_parcels)))
+        logger.info("reading Land Parcels {}".format(osp.basename(self.__land_parcels)))
         land_parcel_df = read_vector_data(self.__land_parcels)
 
-        self.__logger.info("Processing Land Parcel data and Building Footprints ")
+        logger.info("Processing Land Parcel data and Building Footprints ")
         building_within_parcel_df = gpd.sjoin(land_parcel_df, footprint_df, op='intersects', how='left')
         building_within_parcel_df = building_within_parcel_df.dropna()  # drop columns with no Buildings
 
@@ -128,7 +128,7 @@ class ProcessGeometricData:
         return building_within_parcel_df
 
     def get_buildings_within_parcel(self, data: gpd.GeoSeries, count=None):
-        self.__logger.info("Acquiring BFP's within land Parcels ".format(count))
+        logger.info("Acquiring BFP's within land Parcels ".format(count))
         building_within_parcel_count = data.groupby('PRCLDMPID')['geometry'].count()
         if count == 1:
             parcel_ids_with_one_building = list(building_within_parcel_count[building_within_parcel_count == 1].keys())
@@ -143,7 +143,7 @@ class ProcessGeometricData:
 
     def get_parcel_anchorpoints(self, input_dataframe: gpd.GeoSeries):
         self.apt_df_columns = list(self.anchorpoint_df.columns)
-        self.__logger.info("Processing Anchor-Points and Parcel-Building Geo-Dataframe")
+        logger.info("Processing Anchor-Points and Parcel-Building Geo-Dataframe")
         # find spatial join of input_dataframe with anchorpoint
         grouped_df = gpd.sjoin(input_dataframe, self.anchorpoint_df, op='contains', how='inner')
 
@@ -213,24 +213,25 @@ class ProcessGeometricData:
 
 
 def main(args):
-    parcel_path = osp.join(args.path, 'parcels')
+    parcel_path = osp.join(args.path, 'parcel_data')
+    parcels_data = [parcels for parcels in os.listdir(parcel_path) if
+                    not osp.isdir(osp.join(parcel_path, parcels.split('.')[0]))]
+    logger.info("number of Parcel data found {}:".format(len(parcels_data)))
     apt_preprocess = ProcessGeometricData(building_shapefile=osp.join(args.path, args.msft_bfp),
                                           apt_shape_file=osp.join(args.path, args.schema),
                                           output_path=osp.join(args.path, args.out)
                                           )
-    for parcels in os.listdir(parcel_path):
-        if parcels.endswith('.zip') and not osp.exists(osp.join(parcel_path, parcels.split('.')[0])):
-            print(parcels)
+    for parcels in parcels_data:
+        if parcels.endswith('.zip'):
             target_path = osp.join(parcel_path, parcels.split('.')[0])
+            logger.info("processing :{}".format(parcels))
             try:
                 extract_zip_files(osp.join(parcel_path, parcels), target_path=target_path)
+                parcel_shp = osp.join(target_path, parcels.replace('.zip', '.shp'))
+                apt_preprocess.process_dataframe(parcel_shapefile=parcel_shp, complexity=2)
             except IOError as err:
-                logging.info("{}! for parcel {} ".format(err,parcels))
+                logging.info("{}! for parcel {} ".format(err, parcels))
                 continue
-            parcel_shp = osp.join(target_path, parcels.replace('.zip', '.shp'))
-            apt_preprocess.process_dataframe(parcel_shapefile=parcel_shp, complexity=2)
-
-
 
 
 if __name__ == '__main__':

@@ -14,7 +14,7 @@ class ExtractMSFTData:
         self.database_name = database_name
         self.connection = self.connect_to_server()
         if self.connection:
-            self.__logger__.info("connection successfull..")
+            self.__logger__.info("connection successful..")
 
     def connect_to_server(self, username='cerebroadmin', password='admin@123'):
         """
