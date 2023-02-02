@@ -37,7 +37,7 @@ class ExtractMNRData:
         self.database_name = database_name
         self.connection = self.connect_to_server()
         if self.connection:
-            self.__logger__.info("Data base Connection Successful")
+            self.__logger__.info("Connected to Database Successfully")
 
     def connect_to_server(self):
         """
@@ -58,6 +58,7 @@ class ExtractMNRData:
         Extract TomTom's Anchor point from MNR Database with complete address information using SQL Query
         :return: pandas Dataframe
         """
+        self.__logger__.info("Running SQL query on {} schema".format(self.country_code))
         sql_query = "SET search_path TO {}, public;" \
                     "SELECT mnr_apt.feat_id::TEXT, ST_AsText(mnr_apt.geom), " \
                     "mnr_address.iso_script, mnr_address.iso_lang_code, " \
@@ -93,11 +94,23 @@ class ExtractMNRData:
                     "left join mnr_name as state_province_code on " \
                     "mnr_address.state_province_code_id = state_province_code.name_id ".format(self.country_code)
 
-        self.__logger__.info("Running SQL query on {} schema".format(self.country_code))
         stime = time.time()
         dataframe = pd.read_sql(sql_query, self.connection)
         # convert featureID  to string
         # dataframe['feat_id'] = dataframe['feat_id'].apply(lambda x: str(x))
+        self.__logger__.info("APT Data Downloaded Took {:.2f} min".format((time.time() - stime) / 60.0))
+        return dataframe
+
+    def extract_bfp_data(self, ):
+        """
+        Extract BFP data from MNR database
+        """
+        self.__logger__.info("Running SQL query on {} schema".format(self.country_code))
+        sql_query = "SET search_path TO {}, public;" \
+                    "SELECT mnr_building_footprint.feat_id::TEXT, ST_AsText(mnr_building_footprint.geom)" \
+                    "FROM mnr_building_footprint".format(self.country_code)
+        stime = time.time()
+        dataframe = pd.read_sql(sql_query, self.connection)
         self.__logger__.info("APT Data Downloaded Took {:.2f} min".format((time.time() - stime) / 60.0))
         return dataframe
 
@@ -139,7 +152,8 @@ class ExtractAPT:
         return np.asarray(feature_data)
 
     def filter_aptdata(self, feature_matrix):
-        """Function which filters an incoming ndarray of feature matrix and returns the APT's values.
+        """
+        Function which filters an incoming ndarray of feature matrix and returns the APT's values.
         :param feature_matrix : Input feature array.
         :return APT values
         :rtype list
@@ -187,13 +201,20 @@ def main(args):
     mnr_database = ExtractMNRData(country_code=db_schema)
     mnr_database.connect_to_server()
 
-    mnr_apt_df = mnr_database.extract_apt_addresses_data()
-    mnr_database.save_dataframe_as_shpfile(mnr_apt_df, out_path, filename='APT_' + db_schema + '.shp')
+    if args.prefix == 'APT':
+        mnr_apt_df = mnr_database.extract_apt_addresses_data()
+    elif args.prefix == 'BFP':
+        mnr_apt_df = mnr_database.extract_bfp_data()
+    else:
+        logging.error("Select valid Prefix: APT/BFP")
+    mnr_database.save_dataframe_as_shpfile(mnr_apt_df, out_path, filename=args.prefix + "_" + db_schema + '.shp')
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Extract APT from MNR database')
-    parser.add_argument('-s', '--schema',type=str, help='Schema code for USA or other counties from MNR database', required=True)
-    parser.add_argument('-o', '--out',type=str, help='Output path ', required=True)
+    parser.add_argument('-p', '--prefix', type=str, default='APT', help='file name prefix eg. APT/BFP')
+    parser.add_argument('-s', '--schema', type=str, help='Schema code for USA or other counties from MNR database',
+                        required=True)
+    parser.add_argument('-o', '--out', type=str, help='Output path ', required=True)
     args = parser.parse_args()
     main(args)
