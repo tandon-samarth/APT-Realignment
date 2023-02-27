@@ -1,17 +1,16 @@
-import os
-import sys
-
-from shapely import wkt
-from shapely.geometry import Point, MultiPoint
-import geopandas as gpd
-import psycopg2
 import argparse
 import logging
-import pandas as pd
-import numpy as np
+import os
 import time
+
+import geopandas as gpd
+import numpy as np
+import pandas as pd
+import psycopg2
+from shapely import wkt
+from shapely.geometry import Point, MultiPoint
 from sqlalchemy import create_engine
-from geometric_utils import create_logger
+from utils.geometric_utils import create_logger
 
 try:
     import pycoredb
@@ -28,10 +27,11 @@ Get details from http://specs.tomtomgroup.com/specification/mnr-r_daily/internal
 
 class ExtractMNRData:
     def __init__(self, country_code, username="mnr_ro", password="mnr_ro", database_name='mnr',
-                 databse_server='caprod-cpp-pgmnr-002.flatns.net'):
+                 databse_server='caprod-cpp-pgmnr-002.flatns.net', prefix='APT'):
         self.__username__ = username
         self.__password__ = password
         self.__logger__ = create_logger()
+        self.__prefix__ = prefix
         self.country_code = country_code
         self.host = databse_server
         self.database_name = database_name
@@ -92,14 +92,17 @@ class ExtractMNRData:
                     "left join mnr_name as street_number on mnr_address.street_number_id = street_number.name_id " \
                     "left join mnr_name as country_code on mnr_address.country_code_id = country_code.name_id " \
                     "left join mnr_name as state_province_code on " \
-                    "mnr_address.state_province_code_id = state_province_code.name_id ".format(self.country_code)
+                    "mnr_address.state_province_code_id = state_province_code.name_id".format(self.country_code)
 
         stime = time.time()
         dataframe = pd.read_sql(sql_query, self.connection)
+        dataframe['apt_geometry'] = dataframe['st_astext'].apply(lambda x: wkt.loads(x))
+        mnr_geo_dataframe = gpd.GeoDataFrame(dataframe, geometry='apt_geometry', crs="EPSG:4326")
+
         # convert featureID  to string
         # dataframe['feat_id'] = dataframe['feat_id'].apply(lambda x: str(x))
         self.__logger__.info("APT Data Downloaded Took {:.2f} min".format((time.time() - stime) / 60.0))
-        return dataframe
+        return mnr_geo_dataframe
 
     def extract_bfp_data(self, ):
         """
@@ -129,6 +132,14 @@ class ExtractMNRData:
         filename = os.path.join(out_path, filename)
         geo_dataframe.to_file(driver='ESRI Shapefile', filename=filename)
         return filename
+
+    @staticmethod
+    def save_dataframe_as_csv(pd_dataframe: pd.DataFrame, out_path='artifacts', filename='results.csv'):
+        pd_dataframe['coordinates'] = gpd.GeoSeries.from_wkt(pd_dataframe['st_astext'])
+        pd_dataframe = pd_dataframe.drop('st_astext', axis=1)
+        geo_dataframe = gpd.GeoDataFrame(pd_dataframe, geometry='coordinates', crs="EPSG:4326")
+        filename = os.path.join(out_path, filename)
+        geo_dataframe.to_csv(filename, index=False)
 
 
 class ExtractAPT:
@@ -207,7 +218,10 @@ def main(args):
         mnr_apt_df = mnr_database.extract_bfp_data()
     else:
         logging.error("Select valid Prefix: APT/BFP")
-    mnr_database.save_dataframe_as_shpfile(mnr_apt_df, out_path, filename=args.prefix + "_" + db_schema + '.shp')
+    if args.saveas == 'shp':
+        mnr_database.save_dataframe_as_shpfile(mnr_apt_df, out_path, filename=args.prefix + "_" + db_schema + '.shp')
+    else:
+        mnr_database.save_dataframe_as_csv(mnr_apt_df, out_path, filename=args.prefix + "_" + db_schema + '.csv')
 
 
 if __name__ == '__main__':
@@ -215,6 +229,7 @@ if __name__ == '__main__':
     parser.add_argument('-p', '--prefix', type=str, default='APT', help='file name prefix eg. APT/BFP')
     parser.add_argument('-s', '--schema', type=str, help='Schema code for USA or other counties from MNR database',
                         required=True)
+    parser.add_argument('-saveas', type=str, default='csv', help='save dataframe as shp/csv')
     parser.add_argument('-o', '--out', type=str, help='Output path ', required=True)
     args = parser.parse_args()
     main(args)

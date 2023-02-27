@@ -22,7 +22,7 @@ class ExtractMSFTData:
         :return: connection object
         """
         connection = None
-        db_connection_url = "postgresql://cerebroadmin:%s@10.128.154.4:5432/postgres" % quote(password)
+        db_connection_url = f"postgresql://{username}:%s@10.128.154.4:5432/postgres" % quote(password)
         alchemyengine = create_engine(db_connection_url)
         try:
             connection = alchemyengine.connect()

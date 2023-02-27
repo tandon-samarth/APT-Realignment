@@ -90,13 +90,14 @@ def df_2_geovector(data_frame, vector, prefix='geometry', outdir='artifact', vec
     return
 
 
-def save_geodataframe(df, column_name='updated_geometries', shp=True, out_dir='results', filename='realigned_matrix'):
-    geo_dataframe = gpd.GeoDataFrame(df, geometry=column_name, crs="EPSG:4326")
-    pd_dataframe = pd.DataFrame(geo_dataframe)
-    pd_dataframe.to_pickle(os.path.join(out_dir, filename + '.pkl'))
-    time.sleep(1)
-    if shp:
-        geo_dataframe.to_file(driver='ESRI Shapefile', filename=os.path.join(out_dir, filename + '.shp'))
+def save_geodataframe(apt_df, column_name='updated_geometries',ext='pkl', out_dir='results', filename='APT_data'):
+    gdf = gpd.GeoDataFrame(apt_df, geometry=column_name, crs="EPSG:4326")
+    pd_dataframe = pd.DataFrame(gdf)
+    os.makedirs(out_dir, exist_ok=True)
+    if ext =='pkl':
+        pd_dataframe.to_pickle(os.path.join(out_dir, filename + '.pkl'))
+    if ext=='shp':
+        gdf.to_file(driver='ESRI Shapefile', filename=os.path.join(out_dir, filename + '.shp'))
     return os.path.join(out_dir, filename + '.shp')
 
 
