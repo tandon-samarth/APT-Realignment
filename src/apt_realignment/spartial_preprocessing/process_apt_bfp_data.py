@@ -35,9 +35,8 @@ def get_nearest_building_to_apt(anchor_point_gdf, username='cerebroadmin', passw
         db_connection_url = "postgresql://cerebroadmin:%s@10.128.154.4:5432/postgres" % quote(password)
     except (Exception, psycopg2.DatabaseError) as error:
         raise("{}!Unable to connect to server please check internet connection or username/password".format(error))
-    logger.info("Connection to {} successful".format(username))
+    logger.info("Connection to {} successful.Pushing APT data to PostGis ..".format(username))
     connection = create_engine(db_connection_url, pool_size=20, max_overflow=0)
-    logger.info("Pushing APT data to PostGis ..")
     anchor_point_gdf.to_postgis(name="apt_data", schema='dev_apa', con=connection, index=False, if_exists='replace')
     logger.info("Acquiring Nearest Building Footprints")
     nearest_bfp_to_apts = query_nearest_buildings(name='apt', db_connection=connection, min_bfp=near_bfp)
@@ -51,19 +50,16 @@ def get_bfp2bfp_dist_diff(input_df):
     return pd.merge(input_df, diff, on='feat_id')
 
 
-def process_apt_within_bfp(input_df, thresh_distance=10):
+def process_apt_on_bfp(input_df):
     # Anchor Points on Building footprint
-    apt_on_bfp_df = input_df.loc[input_df['apt_intersects'] == True]  # no change in APT coordinates
-    apt_on_bfp_df['updated_APT_with_BFP'] = input_df['apt_geometry'].apply(lambda x: x)
+    return input_df.loc[input_df['apt_intersects'] == True]
 
+def process_apt_within_bfp(input_df, thresh_distance=10):
     # Anchor Points close to BFP <10m
     apt_dist_in_range = input_df.loc[input_df['apt_distance'] <= thresh_distance]
     apt_dist_in_range['updated_APT_with_BFP'] = apt_dist_in_range['apt_building_geometry'].apply(
         lambda x: x.centroid)
-
-    # Append both dataframes
-    final_df = apt_on_bfp_df.append(apt_dist_in_range, ignore_index=True)
-    return final_df
+    return apt_dist_in_range
 
 
 def process_apt_outside_bfp(input_df, distance_diff=15):

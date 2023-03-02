@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 from pyproj import Geod
 import time
+
 warnings.filterwarnings("ignore")
 
 from utils.geometric_utils import create_logger, get_nearest_poly, save_geodataframe, extract_zip_files
@@ -61,39 +62,58 @@ class ImproveAPAScore:
             result_path = osp.join(self.out_path, dirname)
             save_geodataframe(filter_df, column_name='APT_bfp_parcel'
                               , out_dir=result_path, filename='updated_anchor_points')
-            logger.info("File saved at {}".format(result_path))
+            logger.info("File saved as {}.pkl".format())
             del filter_df
         return 0
 
-    def process_with_bfp(self, thresh_distance=10, max_distance=50):
+    def process_with_bfp(self, thresh_distance=10, max_distance=50,out_fname="updated_apts_wih_bfp"):
         query_table_df = self.anchorpoint_df  # gpd.GeoDataFrame(self.anchorpoint_df[['feat_id', 'apt_geometry']], geometry='apt_geometry', crs=4326)
-        print(query_table_df.head())
         query_table_df = query_table_df.to_crs(3857)
+        # query_table_df = query_table_df.sample(1000)  ## create sample
         logger.info("Extracting Nearest Building footprints(in meters) from Database..")
-        s_time = time.time()
+
         nearest_bfp_df = process_bfp_apt.get_nearest_building_to_apt(anchor_point_gdf=query_table_df)
         del query_table_df
         logger.info("Nearest BFPs acquired. Processing for multiple scenarios..")
+
         # Remove outliers AnchorPoint to BFP distance above 50m
         outlier_index = nearest_bfp_df.loc[nearest_bfp_df['apt_distance'] > max_distance].index
         nearest_bfp_df.drop(outlier_index, inplace=True)
 
-        final_df = process_bfp_apt.process_apt_within_bfp(nearest_bfp_df)
+        apt_on_bfp_df = process_bfp_apt.process_apt_on_bfp(nearest_bfp_df)
+        apt_on_bfp_df = pd.merge(self.anchorpoint_df, apt_on_bfp_df, on='feat_id')
+        apt_on_bfp_df['updated_APT_with_BFP'] = apt_on_bfp_df['apt_geometry'].apply(lambda x: x)
+
+        # Append both dataframes
+        apt_not_on_bfp = nearest_bfp_df.loc[nearest_bfp_df['apt_intersects'] == False]
+        del nearest_bfp_df
+
+        apt_near_bfp_df = process_bfp_apt.process_apt_within_bfp(apt_not_on_bfp,
+                                                                 thresh_distance=thresh_distance)  # meters
+        apt_near_bfp_df = pd.merge(self.anchorpoint_df, apt_near_bfp_df, on='feat_id')  # Merge apt not on bfp
+
+        # merge data frames with APT on BFP
+        apts_on_bfp_df = apt_on_bfp_df.append(apt_near_bfp_df, ignore_index=True)
+        del apt_near_bfp_df
+        del apt_on_bfp_df
 
         # Anchor Points in range 10-50m
-        apts_dist_not_in_range = nearest_bfp_df.loc[nearest_bfp_df['apt_distance'] > thresh_distance]
-        apts_dist_not_in_range = apts_dist_not_in_range.to_crs(3857)
-        nearest_bfp_not_in_range = process_bfp_apt.get_nearest_building_to_apt(anchor_point_gdf=apts_dist_not_in_range,
-                                                                               near_bfp=2)
-        apts_in_difference_range = process_bfp_apt.process_apt_outside_bfp(nearest_bfp_not_in_range)
-        data_with_high_diff = apts_in_difference_range[
-            ~apts_in_difference_range['apt_building_id'].isin(final_df['apt_building_id'])]
+        apt_far_from_bfp = apt_not_on_bfp.loc[apt_not_on_bfp['apt_distance'] > 10]
+        apt_far_from_bfp = pd.merge(self.anchorpoint_df, apt_far_from_bfp, on='feat_id')
+        apt_far_from_bfp = apt_far_from_bfp.to_crs(3857)
 
-        data_with_high_diff['updated_APT'] = data_with_high_diff['apt_building_geometry'].apply(lambda x: x.centroid)
-        final_df = final_df.append(data_with_high_diff, ignore_index=True)
-        logger.info("Saving processed data as pkl at {}".format(self.out_path))
-        save_geodataframe(final_df, column_name='updated_APT', ext='pkl', out_dir=self.out_path,
-                          filename='updated_APT_with_BFP')
+        bfp_far_off_apt = process_bfp_apt.get_nearest_building_to_apt(anchor_point_gdf=apt_far_from_bfp,
+                                                                      near_bfp=2)
+        bfp_far_off_apt = process_bfp_apt.process_apt_outside_bfp(bfp_far_off_apt)
+        bfp_far_off_apt = bfp_far_off_apt[
+            ~bfp_far_off_apt['apt_building_id'].isin(apts_on_bfp_df['apt_building_id'])]
+
+
+        bfp_far_off_apt['updated_APT_with_BFP'] = bfp_far_off_apt['apt_building_geometry'].apply(lambda x: x.centroid)
+        final_df = apts_on_bfp_df.append(bfp_far_off_apt, ignore_index=True)
+        logger.info("Saving processed data as pkl {}.pkl".format(out_fname))
+        save_geodataframe(final_df, column_name='updated_APT_with_BFP', ext='pkl', out_dir=self.out_path,
+                          filename=out_fname)
 
     def process_with_ppa(self):
         pass
@@ -173,13 +193,13 @@ def main(args):
         logger.info("APT data found with {} data points".format(mnr_df.shape[0]))
     except IndexError as err:
         logger.error("{} Pkl file not available.Extracting from MNR Database".format(err))
+        stime = time.time()
         mnr_database = ExtractMNRData(country_code=db_schema)
         mnr_database.connect_to_server()
         mnr_geo_dataframe = mnr_database.extract_apt_addresses_data()
+        logger.info("APT dataframe created..{}".format(round(time.time()-stime),2))
 
-    logger.info("APT dataframe created..")
     parcel_path = osp.join(args.path, 'parcel_data')
-
     if osp.isdir(parcel_path):
         parcels_data = [pzip for pzip in os.listdir(parcel_path) if pzip.endswith('.zip')]
 
@@ -202,9 +222,8 @@ def main(args):
                 apt_preprocess.process_with_bfp_parcel(parcel_shapefile=parcel_shp, bfp_per_parcel=1)
                 apt_preprocess.process_with_bfp_parcel(parcel_shapefile=parcel_shp, bfp_per_parcel=2)
                 # apt_preprocess.process_apt_with_bfp_parcel(parcel_shapefile=parcel_shp, bfp_per_parcel=3)
-
     else:
-        apt_preprocess.process_with_bfp()
+        apt_preprocess.process_with_bfp(out_fname=args.fname)
 
 
 if __name__ == '__main__':
