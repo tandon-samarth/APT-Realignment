@@ -9,7 +9,7 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 from pyproj import Geod
-
+import time
 warnings.filterwarnings("ignore")
 
 from utils.geometric_utils import create_logger, get_nearest_poly, save_geodataframe, extract_zip_files
@@ -66,28 +66,34 @@ class ImproveAPAScore:
         return 0
 
     def process_with_bfp(self, thresh_distance=10, max_distance=50):
-
-        query_table_df = gpd.GeoDataFrame(self.anchorpoint_df[['feat_id', 'geometry']], geometry='geometry', crs=4326)
+        query_table_df = self.anchorpoint_df  # gpd.GeoDataFrame(self.anchorpoint_df[['feat_id', 'apt_geometry']], geometry='apt_geometry', crs=4326)
+        print(query_table_df.head())
         query_table_df = query_table_df.to_crs(3857)
+        logger.info("Extracting Nearest Building footprints(in meters) from Database..")
+        s_time = time.time()
         nearest_bfp_df = process_bfp_apt.get_nearest_building_to_apt(anchor_point_gdf=query_table_df)
-
+        del query_table_df
+        logger.info("Nearest BFPs acquired. Processing for multiple scenarios..")
         # Remove outliers AnchorPoint to BFP distance above 50m
         outlier_index = nearest_bfp_df.loc[nearest_bfp_df['apt_distance'] > max_distance].index
         nearest_bfp_df.drop(outlier_index, inplace=True)
 
-        # Anchor Points on Building footprint
-        apt_within_bfp_df = nearest_bfp_df.loc[nearest_bfp_df['apt_intersects'] == True]
-        apt_within_bfp_df['updated_APT_with_BFP'] = apt_within_bfp_df['apt_building_geometry'].apply(
-            lambda x: x.centroid)
-
-        # Anchor Points close to BFP <10m
-        apts_within_thresh_distance = apt_within_bfp_df.loc[apt_within_bfp_df['apt_distance'] <= thresh_distance]
-        apts_within_thresh_distance['updated_APT_with_BFP'] = apts_within_thresh_distance[
-            'apt_building_geometry'].apply(lambda x: x.centroid)
+        final_df = process_bfp_apt.process_apt_within_bfp(nearest_bfp_df)
 
         # Anchor Points in range 10-50m
-        apts_within_thresh_distance = apt_within_bfp_df.loc[apt_within_bfp_df['apt_distance'] <= thresh_distance]
+        apts_dist_not_in_range = nearest_bfp_df.loc[nearest_bfp_df['apt_distance'] > thresh_distance]
+        apts_dist_not_in_range = apts_dist_not_in_range.to_crs(3857)
+        nearest_bfp_not_in_range = process_bfp_apt.get_nearest_building_to_apt(anchor_point_gdf=apts_dist_not_in_range,
+                                                                               near_bfp=2)
+        apts_in_difference_range = process_bfp_apt.process_apt_outside_bfp(nearest_bfp_not_in_range)
+        data_with_high_diff = apts_in_difference_range[
+            ~apts_in_difference_range['apt_building_id'].isin(final_df['apt_building_id'])]
 
+        data_with_high_diff['updated_APT'] = data_with_high_diff['apt_building_geometry'].apply(lambda x: x.centroid)
+        final_df = final_df.append(data_with_high_diff, ignore_index=True)
+        logger.info("Saving processed data as pkl at {}".format(self.out_path))
+        save_geodataframe(final_df, column_name='updated_APT', ext='pkl', out_dir=self.out_path,
+                          filename='updated_APT_with_BFP')
 
     def process_with_ppa(self):
         pass
@@ -156,22 +162,33 @@ class ImproveAPAScore:
 
 
 def main(args):
+    parcels_data = list()
     db_schema = args.schema
-    logger.info("Extracting {}-Schema from MNR database".format(args.schema))
-    mnr_database = ExtractMNRData(country_code=db_schema)
-    mnr_database.connect_to_server()
-    mnr_geo_dataframe = mnr_database.extract_apt_addresses_data()
+
+    pkl_file = [os.path.join(args.path, pkl_file) for pkl_file in os.listdir(args.path) if pkl_file.startswith('APT')]
+    try:
+        logger.info("{} APT data found. Accessing file".format(len(pkl_file)))
+        mnr_df = pd.read_pickle(pkl_file.pop())
+        mnr_geo_dataframe = gpd.GeoDataFrame(mnr_df, geometry='apt_geometry', crs="EPSG:4326")
+        logger.info("APT data found with {} data points".format(mnr_df.shape[0]))
+    except IndexError as err:
+        logger.error("{} Pkl file not available.Extracting from MNR Database".format(err))
+        mnr_database = ExtractMNRData(country_code=db_schema)
+        mnr_database.connect_to_server()
+        mnr_geo_dataframe = mnr_database.extract_apt_addresses_data()
 
     logger.info("APT dataframe created..")
     parcel_path = osp.join(args.path, 'parcel_data')
-    parcels_data = [pzip for pzip in os.listdir(parcel_path) if pzip.endswith('.zip')]
 
-    logger.info("Number of Parcel data found {}:".format(len(parcels_data)))
+    if osp.isdir(parcel_path):
+        parcels_data = [pzip for pzip in os.listdir(parcel_path) if pzip.endswith('.zip')]
+
     apt_preprocess = ImproveAPAScore(building_shapefile=osp.join(args.path, args.msft_bfp),
                                      mnr_apt_data=mnr_geo_dataframe,
                                      output_path=osp.join(args.path, args.out)
                                      )
     if len(parcels_data) > 0:
+        logger.info("Number of Parcel data found {}:".format(len(parcels_data)))
         for parcel_file in parcels_data:
             if parcel_file.endswith('.zip'):
                 logger.info("Running process for : {}".format(parcel_file))
@@ -187,7 +204,7 @@ def main(args):
                 # apt_preprocess.process_apt_with_bfp_parcel(parcel_shapefile=parcel_shp, bfp_per_parcel=3)
 
     else:
-        logger.info("No Parcel data Found ")
+        apt_preprocess.process_with_bfp()
 
 
 if __name__ == '__main__':
@@ -197,6 +214,7 @@ if __name__ == '__main__':
     parser.add_argument('-p', '--path', type=str, required=True, help='Path to the data')
     parser.add_argument('-s', '--schema', type=str, required=True, help='name of the schema to run APT_process')
     parser.add_argument('-m', '--msft_bfp', type=str, required=True, help='name of the BFP file in geojson/shp')
-    parser.add_argument('-o', '--out', type=str, default='Apt_realignment_MSFT', help='output path')
+    parser.add_argument('-o', '--out', type=str, default='mnr_apt_data', help='output path')
+    parser.add_argument('-f', '--fname', type=str, default='updated_APT_matrix', help="output filename")
     args = parser.parse_args()
     main(args)

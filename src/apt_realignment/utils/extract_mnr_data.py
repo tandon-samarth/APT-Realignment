@@ -126,20 +126,21 @@ class ExtractMNRData:
         :param filename: (string) output filename
         :return:
         """
-        pd_dataframe['coordinates'] = gpd.GeoSeries.from_wkt(pd_dataframe['st_astext'])
+        pd_dataframe['apt_geometry'] = gpd.GeoSeries.from_wkt(pd_dataframe['st_astext'])
         pd_dataframe = pd_dataframe.drop('st_astext', axis=1)
-        geo_dataframe = gpd.GeoDataFrame(pd_dataframe, geometry='coordinates', crs="EPSG:4326")
+        geo_dataframe = gpd.GeoDataFrame(pd_dataframe, geometry='apt_geometry', crs="EPSG:4326")
         filename = os.path.join(out_path, filename)
         geo_dataframe.to_file(driver='ESRI Shapefile', filename=filename)
         return filename
 
     @staticmethod
-    def save_dataframe_as_csv(pd_dataframe: pd.DataFrame, out_path='artifacts', filename='results.csv'):
-        pd_dataframe['coordinates'] = gpd.GeoSeries.from_wkt(pd_dataframe['st_astext'])
+    def save_dataframe(pd_dataframe: pd.DataFrame, out_path='artifacts', filename='results'):
+        pd_dataframe['apt_geometry'] = gpd.GeoSeries.from_wkt(pd_dataframe['st_astext'])
         pd_dataframe = pd_dataframe.drop('st_astext', axis=1)
-        geo_dataframe = gpd.GeoDataFrame(pd_dataframe, geometry='coordinates', crs="EPSG:4326")
+        geo_dataframe = gpd.GeoDataFrame(pd_dataframe, geometry='apt_geometry', crs="EPSG:4326")
         filename = os.path.join(out_path, filename)
-        geo_dataframe.to_csv(filename, index=False)
+        geo_dataframe.to_pickle(filename+'.pkl')
+        # geo_dataframe.to_csv(filename, index=False)
 
 
 class ExtractAPT:
@@ -207,6 +208,7 @@ def download_apt_elements(shape_file, out_path):
 
 
 def main(args):
+    mnr_apt_df = pd.DataFrame()
     db_schema = args.schema
     out_path = args.out
     mnr_database = ExtractMNRData(country_code=db_schema)
@@ -219,9 +221,9 @@ def main(args):
     else:
         logging.error("Select valid Prefix: APT/BFP")
     if args.saveas == 'shp':
-        mnr_database.save_dataframe_as_shpfile(mnr_apt_df, out_path, filename=args.prefix + "_" + db_schema + '.shp')
+        mnr_database.save_dataframe_as_shpfile(mnr_apt_df, out_path, filename=args.prefix + "_" + db_schema)
     else:
-        mnr_database.save_dataframe_as_csv(mnr_apt_df, out_path, filename=args.prefix + "_" + db_schema + '.csv')
+        mnr_database.save_dataframe(mnr_apt_df, out_path, filename=args.prefix + db_schema)
 
 
 if __name__ == '__main__':
@@ -229,7 +231,7 @@ if __name__ == '__main__':
     parser.add_argument('-p', '--prefix', type=str, default='APT', help='file name prefix eg. APT/BFP')
     parser.add_argument('-s', '--schema', type=str, help='Schema code for USA or other counties from MNR database',
                         required=True)
-    parser.add_argument('-saveas', type=str, default='csv', help='save dataframe as shp/csv')
+    parser.add_argument('-saveas', type=str, default='pkl', help='save dataframe as shp/csv/pkl')
     parser.add_argument('-o', '--out', type=str, help='Output path ', required=True)
     args = parser.parse_args()
     main(args)
