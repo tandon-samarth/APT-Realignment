@@ -140,8 +140,7 @@ def create_logger():
 
 
 def combine_all_processed_data(out_path, filename='schema'):
-    pkl_files = glob(out_path + '*/*.pkl')
-
+    pkl_files = glob(out_path + '/*/*.pkl')
     def __read_data__(fname):
         df_bfp = pd.read_pickle(fname)
         df_bfp.reset_index(drop=True)

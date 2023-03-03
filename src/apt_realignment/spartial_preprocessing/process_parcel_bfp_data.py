@@ -84,4 +84,17 @@ def get_apt_within_parcel(apt_dataframe,bfp_parcel_dataframe):
     return grouped_df
 
 
+def prep_polygons_asarr(gs):
+    def get_pts(poly):
+        if isinstance(poly, shapely.geometry.Polygon):
+            coords = np.array(poly.exterior.coords)
+        elif isinstance(poly, shapely.geometry.MultiPolygon):
+            coords = np.concatenate([get_pts(sp) for sp in poly.geoms])
+        return coords
 
+    return [get_pts(poly) for poly in gs]
+
+def get_nearest_poly(pt, polys):
+    polys = prep_polygons_asarr(polys)
+    dists = np.array([np.abs(np.linalg.norm(poly - pt, axis=1)).min() for poly in polys])
+    return dists.argmin()

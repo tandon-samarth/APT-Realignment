@@ -2,6 +2,7 @@ import argparse
 import logging
 import os
 import os.path as osp
+import time
 import warnings
 from glob import glob
 
@@ -9,11 +10,10 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 from pyproj import Geod
-import time
 
 warnings.filterwarnings("ignore")
 
-from utils import geometric_utils as gutils # import create_logger, save_geodataframe, extract_zip_files
+from utils import geometric_utils as gutils  # import create_logger, save_geodataframe, extract_zip_files
 from utils.haversine_distance import get_distance
 from utils.extract_mnr_data import ExtractMNRData
 from spartial_preprocessing import process_parcel_bfp_data as process_bfp_parcel
@@ -27,7 +27,6 @@ class ImproveAPAScore:
     def __init__(self, building_shapefile, mnr_apt_data, output_path=None):
 
         self.out_path = output_path
-        self.__land_parcels = None
         self.__building_footprints = building_shapefile
         self.anchorpoint_df = mnr_apt_data
         self.apt_df_columns = list(self.anchorpoint_df.columns)
@@ -35,9 +34,9 @@ class ImproveAPAScore:
                             'state_province_code', 'country_code', 'street_name', 'locality', 'prefix', 'suffix',
                             'predir', 'postdir', 'sn_body', 'apt_geometry']
 
-    def process_with_bfp_parcel(self, parcel_shapefile, bfp_per_parcel=1, save_df=True, filename='APT_realigned'):
-        self.__land_parcels = parcel_shapefile
-        logger.info("Processing APT's with Parcel data {} BFP-Count Per Parcel".format(bfp_per_parcel))
+    def process_with_bfp_parcel(self, parcel_shapefile, dist_thresh=50, bfp_per_parcel=1, save_df=True,
+                                filename='APT_realigned'):
+        logger.info("Processing APT's with Parcel data: {}BFP Per Parcel".format(bfp_per_parcel))
         bfp_intersection_parcel_df = process_bfp_parcel.bfp_parcel_overlap(bfp_path=self.__building_footprints,
                                                                            parcel_path=parcel_shapefile)
         df_bfp_within_parcels = process_bfp_parcel.get_buildings_within_parcel(bfp_intersection_parcel_df,
@@ -48,25 +47,28 @@ class ImproveAPAScore:
             process_df = process_df.groupby(['PRCLDMPID'], as_index=False).apply(
                 lambda x: pd.Series(self.process_apt_with_multi_bfp(x, bfp_count=bfp_per_parcel)))
 
-        process_df['APT_bfp_parcel'] = process_df['building_roi'].apply(lambda x: x.centroid)  # change to bfp edge
-        process_df['apt_bfp_dist'] = process_df.apply(lambda x: self.get_apt_to_bfp_distance(x), axis=1)
         process_df['apt_on_bfp'] = process_df.apply(lambda x: self.apt_at_rooftop(x), axis=1)
+        process_df['apt_bfp_dist'] = process_df.apply(lambda x: self.get_apt_to_bfp_distance(x), axis=1)
+
+        outlier_index = process_df.loc[process_df['apt_bfp_dist'] >= dist_thresh].index
+        process_df.drop(outlier_index, inplace=True)
+        logger.info("dropping {} APT outliers".format(len(outlier_index)))
+        process_df['APT_bfp_parcel'] = process_df['building_roi'].apply(lambda x: x.centroid)  # change to bfp edge
 
         cols = self.req_columns + ['apt_bfp_dist', 'apt_on_bfp', 'APT_bfp_parcel']
         filter_df = process_df[cols]
         del process_df
 
         if save_df:
-            logger.info("saving {} data points ".format(filter_df.shape[0]))
             dirname = "{}_updated_apt_{}_bfp".format(osp.basename(parcel_shapefile).split('.')[0], str(bfp_per_parcel))
             result_path = osp.join(self.out_path, dirname)
             gutils.save_geodataframe(filter_df, column_name='APT_bfp_parcel'
-                              , out_dir=result_path, filename='updated_anchor_points')
-            logger.info("File saved as {}.pkl".format(filename))
+                                     , out_dir=result_path, filename=filename)
+            logger.info("saving {} datapoints-File: {}.pkl".format(filter_df.shape[0], filename))
             del filter_df
         return 0
 
-    def process_with_bfp(self, thresh_distance=10, max_distance=50,out_fname="updated_apts_wih_bfp"):
+    def process_with_bfp(self, thresh_distance=10, max_distance=50, out_fname="updated_apts_wih_bfp"):
         query_table_df = self.anchorpoint_df  # gpd.GeoDataFrame(self.anchorpoint_df[['feat_id', 'apt_geometry']], geometry='apt_geometry', crs=4326)
         query_table_df = query_table_df.to_crs(3857)
         # query_table_df = query_table_df.sample(1000)  ## create sample
@@ -108,13 +110,12 @@ class ImproveAPAScore:
         bfp_far_off_apt = bfp_far_off_apt[
             ~bfp_far_off_apt['apt_building_id'].isin(apts_on_bfp_df['apt_building_id'])]
 
-
         bfp_far_off_apt['updated_APT_with_BFP'] = bfp_far_off_apt['apt_building_geometry'].apply(lambda x: x.centroid)
         final_df = apts_on_bfp_df.append(bfp_far_off_apt, ignore_index=True)
         del bfp_far_off_apt
         logger.info("Saving processed data as pkl {}.pkl".format(out_fname))
-        save_geodataframe(final_df, column_name='updated_APT_with_BFP', ext='pkl', out_dir=self.out_path,
-                          filename=out_fname)
+        gutils.save_geodataframe(final_df, column_name='updated_APT_with_BFP', ext='pkl', out_dir=self.out_path,
+                                 filename=out_fname)
 
     def process_with_ppa(self):
         pass
@@ -129,7 +130,7 @@ class ImproveAPAScore:
 
     def get_apt_to_bfp_distance(self, data):
         anchor_point = data['apt_geometry']
-        bfp_centroid = data['APT_bfp_parcel']
+        bfp_centroid = data['building_roi'].centroid
         return get_distance(anchor_point, bfp_centroid)
 
     def process_apt_with_multi_bfp(self, x, area_thresh=150, bfp_count=2):
@@ -145,13 +146,15 @@ class ImproveAPAScore:
                     ret['building_roi'] = building_polygons[0]
                 else:
                     ret['building_roi'] = (
-                        list(x['building_roi'][:2])[process_bfp_parcel.get_nearest_poly(list(x['apt_geometry'])[0], building_polygons)])
+                        list(x['building_roi'][:2])[
+                            process_bfp_parcel.get_nearest_poly(list(x['apt_geometry'])[0], building_polygons)])
             elif area_diff <= 0:
                 if np.abs(area_diff) > area_thresh:
                     ret['building_roi'] = building_polygons[1]
                 else:
                     ret['building_roi'] = (
-                        list(x['building_roi'][:2])[process_bfp_parcel.get_nearest_poly(list(x['apt_geometry'])[0], building_polygons)])
+                        list(x['building_roi'][:2])[
+                            process_bfp_parcel.get_nearest_poly(list(x['apt_geometry'])[0], building_polygons)])
         if bfp_count > 2:
             building_polygons = list(x['building_roi'][:3])
             mnr_apt = list(x['apt_geometry'])[0]
@@ -160,7 +163,8 @@ class ImproveAPAScore:
                 if self.check_point_on_polygon(polygon, mnr_apt):
                     point_on_polygon = True
             if not point_on_polygon:
-                ret['building_roi'] = (list(x['building_roi'][:3])[get_nearest_poly(mnr_apt, building_polygons)])
+                ret['building_roi'] = (
+                    list(x['building_roi'][:3])[process_bfp_parcel.get_nearest_poly(mnr_apt, building_polygons)])
         return ret
 
     @staticmethod
@@ -184,7 +188,6 @@ class ImproveAPAScore:
 
 def main(args):
     parcels_data = list()
-
     pkl_file = [os.path.join(args.path, pkl_file) for pkl_file in os.listdir(args.path) if pkl_file.startswith('APT')]
     try:
         logger.info("{} APT data found. Accessing file".format(len(pkl_file)))
@@ -197,7 +200,7 @@ def main(args):
         mnr_database = ExtractMNRData(country_code=args.schema)
         mnr_database.connect_to_server()
         mnr_geo_dataframe = mnr_database.extract_apt_addresses_data()
-        logger.info("APT dataframe created..{}".format(round(time.time()-stime),2))
+        logger.info("APT dataframe created..{}".format(round(time.time() - stime), 2))
 
     parcel_path = osp.join(args.path, 'parcel_data')
     if osp.isdir(parcel_path):
@@ -220,23 +223,29 @@ def main(args):
                     logging.error('{}! for parcel {}'.format(err, parcel_file))
                     continue
                 parcel_shp = osp.join(target_path, parcel_file.replace('.zip', '.shp'))
-                apt_preprocess.process_with_bfp_parcel(parcel_shapefile=parcel_shp, bfp_per_parcel=1)
-                apt_preprocess.process_with_bfp_parcel(parcel_shapefile=parcel_shp, bfp_per_parcel=2)
-                # apt_preprocess.process_apt_with_bfp_parcel(parcel_shapefile=parcel_shp, bfp_per_parcel=3)
-        logger.info("Process completed in {} min.".format(round((time.time()-stime)/60.0,2)))
-        gutils.combine_all_processed_data(osp.join(args.path, args.out),filename=args.schema)
-
-    else:
-        apt_preprocess.process_with_bfp(out_fname=args.fname)
-
+                apt_preprocess.process_with_bfp_parcel(parcel_shapefile=parcel_shp,
+                                                       bfp_per_parcel=1,
+                                                       filename=args.fname)
+                apt_preprocess.process_with_bfp_parcel(parcel_shapefile=parcel_shp,
+                                                       bfp_per_parcel=2,
+                                                       filename=args.fname)
+                apt_preprocess.process_with_bfp_parcel(parcel_shapefile=parcel_shp,
+                                                       bfp_per_parcel=3,
+                                                       filename=args.fname)
+                logger.info("Process completed in {} min.".format(round((time.time() - stime) / 60.0, 2)))
+                gutils.combine_all_processed_data(osp.join(args.path, args.out), filename=args.schema)
+            else:
+                apt_preprocess.process_with_bfp(out_fname=args.fname)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=
                                      'Create Realigned Matrix of APTs using MNR APT databse, DMP Parcels '
                                      'and Building footprint')
     parser.add_argument('-p', '--path', type=str, required=True, help='Path to the data')
-    parser.add_argument('-s', '--schema', type=str, required=True, help='name of the schema to run APT_process')
-    parser.add_argument('-m', '--msft_bfp', type=str, required=True, help='name of the BFP file in geojson/shp')
+    parser.add_argument('-s', '--schema', type=str, required=True,
+                        help='name of the schema to run APT_process')
+    parser.add_argument('-m', '--msft_bfp', type=str, required=True,
+                        help='name of the BFP file in geojson/shp')
     parser.add_argument('-o', '--out', type=str, default='mnr_apt_data', help='output path')
     parser.add_argument('-f', '--fname', type=str, default='updated_APT_matrix', help="output filename")
     args = parser.parse_args()
