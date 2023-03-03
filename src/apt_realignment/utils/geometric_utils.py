@@ -1,19 +1,18 @@
 import logging
 import os
-import time
+import zipfile
+from glob import glob
 
 import geopandas as gpd
-import numpy as np
 import pandas as pd
-from shapely.geometry import box
 import shapely
+from shapely.geometry import box
 
 
-import zipfile
-
-def extract_zip_files(zip_path,target_path):
+def extract_zip_files(zip_path, target_path):
     with zipfile.ZipFile(zip_path, "r") as zip_ref:
         zip_ref.extractall(target_path)
+
 
 def download_osm_building_footprint(county, state, country='USA', out_path='results'):
     place_name = "{} {} {}".format(county, state, country)
@@ -31,7 +30,7 @@ def download_osm_building_footprint(county, state, country='USA', out_path='resu
     bfp_gdf = bfp_gdf[['osmid', 'building_geometry']]
     bfp_gdf = gpd.GeoDataFrame(bfp_gdf, geometry='building_geometry', crs="EPSG:4326")
     if out_path:
-        bfp_gdf.to_file(out_path,driver='ESRI Shapefile')
+        bfp_gdf.to_file(out_path, driver='ESRI Shapefile')
     return bfp_gdf
 
 
@@ -55,6 +54,7 @@ def merge_osm_msft_data(msft_geojson, osm_geojson):
     final_geometries = msft_geometries.apply(lambda x: check_within_bounds(x))
     final_gdf = merged_data.append(final_geometries[final_geometries.notna()])
     return final_gdf
+
 
 def download_osm_building_footprint(place_name, state, country='USA', out_path='results'):
     tags = {"building": True}
@@ -90,13 +90,13 @@ def df_2_geovector(data_frame, vector, prefix='geometry', outdir='artifact', vec
     return
 
 
-def save_geodataframe(apt_df, column_name='updated_geometries',ext='pkl', out_dir='results', filename='APT_data'):
+def save_geodataframe(apt_df, column_name='updated_geometries', ext='pkl', out_dir='results', filename='APT_data'):
     gdf = gpd.GeoDataFrame(apt_df, geometry=column_name, crs="EPSG:4326")
     pd_dataframe = pd.DataFrame(gdf)
     os.makedirs(out_dir, exist_ok=True)
-    if ext =='pkl':
+    if ext == 'pkl':
         pd_dataframe.to_pickle(os.path.join(out_dir, filename + '.pkl'))
-    if ext=='shp':
+    if ext == 'shp':
         gdf.to_file(driver='ESRI Shapefile', filename=os.path.join(out_dir, filename + '.shp'))
     return os.path.join(out_dir, filename + '.shp')
 
@@ -139,18 +139,13 @@ def create_logger():
     return logger
 
 
-def prep_polygons_asarr(gs):
-    def get_pts(poly):
-        if isinstance(poly, shapely.geometry.Polygon):
-            coords = np.array(poly.exterior.coords)
-        elif isinstance(poly, shapely.geometry.MultiPolygon):
-            coords = np.concatenate([get_pts(sp) for sp in poly.geoms])
-        return coords
+def combine_all_processed_data(out_path, filename='schema'):
+    pkl_files = glob(out_path + '*/*.pkl')
 
-    return [get_pts(poly) for poly in gs]
+    def __read_data__(fname):
+        df_bfp = pd.read_pickle(fname)
+        df_bfp.reset_index(drop=True)
+        return df_bfp
 
-
-def get_nearest_poly(pt, polys):
-    polys = prep_polygons_asarr(polys)
-    dists = np.array([np.abs(np.linalg.norm(poly - pt, axis=1)).min() for poly in polys])
-    return dists.argmin()
+    out = pd.concat([__read_data__(fname) for fname in pkl_files])
+    out.to_pickle(os.path.join(out_path, "APT_bfp_parcel" + filename + '.pkl'))

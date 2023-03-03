@@ -1,12 +1,14 @@
-
 from urllib.parse import quote
-import psycopg2
+import numpy as np
 import geopandas as gpd
 import pandas as pd
-
+import psycopg2
+import shapely
 from sqlalchemy import create_engine
 from utils.geometric_utils import create_logger
+
 logger = create_logger()
+
 
 def query_nearest_buildings(name, db_connection, min_bfp=1):
     return gpd.GeoDataFrame.from_postgis(f'''SELECT
@@ -34,7 +36,7 @@ def get_nearest_building_to_apt(anchor_point_gdf, username='cerebroadmin', passw
     try:
         db_connection_url = "postgresql://cerebroadmin:%s@10.128.154.4:5432/postgres" % quote(password)
     except (Exception, psycopg2.DatabaseError) as error:
-        raise("{}!Unable to connect to server please check internet connection or username/password".format(error))
+        raise ("{}!Unable to connect to server please check internet connection or username/password".format(error))
     logger.info("Connection to {} successful.Pushing APT data to PostGis ..".format(username))
     connection = create_engine(db_connection_url, pool_size=20, max_overflow=0)
     anchor_point_gdf.to_postgis(name="apt_data", schema='dev_apa', con=connection, index=False, if_exists='replace')
@@ -54,6 +56,7 @@ def process_apt_on_bfp(input_df):
     # Anchor Points on Building footprint
     return input_df.loc[input_df['apt_intersects'] == True]
 
+
 def process_apt_within_bfp(input_df, thresh_distance=10):
     # Anchor Points close to BFP <10m
     apt_dist_in_range = input_df.loc[input_df['apt_distance'] <= thresh_distance]
@@ -67,3 +70,20 @@ def process_apt_outside_bfp(input_df, distance_diff=15):
     df_with_high_diff = df_with_high_diff.loc[df_with_high_diff['distance_diff'] > distance_diff]
     df_with_high_diff = df_with_high_diff[df_with_high_diff['feat_id'].duplicated(keep="last")]
     return df_with_high_diff
+
+
+def prep_polygons_asarr(gs):
+    def get_pts(poly):
+        if isinstance(poly, shapely.geometry.Polygon):
+            coords = np.array(poly.exterior.coords)
+        elif isinstance(poly, shapely.geometry.MultiPolygon):
+            coords = np.concatenate([get_pts(sp) for sp in poly.geoms])
+        return coords
+
+    return [get_pts(poly) for poly in gs]
+
+
+def get_nearest_poly(pt, polys):
+    polys = prep_polygons_asarr(polys)
+    dists = np.array([np.abs(np.linalg.norm(poly - pt, axis=1)).min() for poly in polys])
+    return dists.argmin()

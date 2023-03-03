@@ -13,14 +13,14 @@ import time
 
 warnings.filterwarnings("ignore")
 
-from utils.geometric_utils import create_logger, get_nearest_poly, save_geodataframe, extract_zip_files
+from utils import geometric_utils as gutils # import create_logger, save_geodataframe, extract_zip_files
 from utils.haversine_distance import get_distance
 from utils.extract_mnr_data import ExtractMNRData
 from spartial_preprocessing import process_parcel_bfp_data as process_bfp_parcel
 from spartial_preprocessing import process_apt_bfp_data as process_bfp_apt
 
 geod = Geod(ellps="WGS84")
-logger = create_logger()
+logger = gutils.create_logger()
 
 
 class ImproveAPAScore:
@@ -60,9 +60,9 @@ class ImproveAPAScore:
             logger.info("saving {} data points ".format(filter_df.shape[0]))
             dirname = "{}_updated_apt_{}_bfp".format(osp.basename(parcel_shapefile).split('.')[0], str(bfp_per_parcel))
             result_path = osp.join(self.out_path, dirname)
-            save_geodataframe(filter_df, column_name='APT_bfp_parcel'
+            gutils.save_geodataframe(filter_df, column_name='APT_bfp_parcel'
                               , out_dir=result_path, filename='updated_anchor_points')
-            logger.info("File saved as {}.pkl".format())
+            logger.info("File saved as {}.pkl".format(filename))
             del filter_df
         return 0
 
@@ -111,6 +111,7 @@ class ImproveAPAScore:
 
         bfp_far_off_apt['updated_APT_with_BFP'] = bfp_far_off_apt['apt_building_geometry'].apply(lambda x: x.centroid)
         final_df = apts_on_bfp_df.append(bfp_far_off_apt, ignore_index=True)
+        del bfp_far_off_apt
         logger.info("Saving processed data as pkl {}.pkl".format(out_fname))
         save_geodataframe(final_df, column_name='updated_APT_with_BFP', ext='pkl', out_dir=self.out_path,
                           filename=out_fname)
@@ -144,13 +145,13 @@ class ImproveAPAScore:
                     ret['building_roi'] = building_polygons[0]
                 else:
                     ret['building_roi'] = (
-                        list(x['building_roi'][:2])[get_nearest_poly(list(x['apt_geometry'])[0], building_polygons)])
+                        list(x['building_roi'][:2])[process_bfp_parcel.get_nearest_poly(list(x['apt_geometry'])[0], building_polygons)])
             elif area_diff <= 0:
                 if np.abs(area_diff) > area_thresh:
                     ret['building_roi'] = building_polygons[1]
                 else:
                     ret['building_roi'] = (
-                        list(x['building_roi'][:2])[get_nearest_poly(list(x['apt_geometry'])[0], building_polygons)])
+                        list(x['building_roi'][:2])[process_bfp_parcel.get_nearest_poly(list(x['apt_geometry'])[0], building_polygons)])
         if bfp_count > 2:
             building_polygons = list(x['building_roi'][:3])
             mnr_apt = list(x['apt_geometry'])[0]
@@ -183,7 +184,6 @@ class ImproveAPAScore:
 
 def main(args):
     parcels_data = list()
-    db_schema = args.schema
 
     pkl_file = [os.path.join(args.path, pkl_file) for pkl_file in os.listdir(args.path) if pkl_file.startswith('APT')]
     try:
@@ -194,7 +194,7 @@ def main(args):
     except IndexError as err:
         logger.error("{} Pkl file not available.Extracting from MNR Database".format(err))
         stime = time.time()
-        mnr_database = ExtractMNRData(country_code=db_schema)
+        mnr_database = ExtractMNRData(country_code=args.schema)
         mnr_database.connect_to_server()
         mnr_geo_dataframe = mnr_database.extract_apt_addresses_data()
         logger.info("APT dataframe created..{}".format(round(time.time()-stime),2))
@@ -209,12 +209,13 @@ def main(args):
                                      )
     if len(parcels_data) > 0:
         logger.info("Number of Parcel data found {}:".format(len(parcels_data)))
+        stime = time.time()
         for parcel_file in parcels_data:
             if parcel_file.endswith('.zip'):
                 logger.info("Running process for : {}".format(parcel_file))
                 target_path = osp.join(parcel_path, parcel_file.split('.')[0])
                 try:
-                    extract_zip_files(osp.join(parcel_path, parcel_file), target_path=target_path)
+                    gutils.extract_zip_files(osp.join(parcel_path, parcel_file), target_path=target_path)
                 except IOError as err:
                     logging.error('{}! for parcel {}'.format(err, parcel_file))
                     continue
@@ -222,6 +223,9 @@ def main(args):
                 apt_preprocess.process_with_bfp_parcel(parcel_shapefile=parcel_shp, bfp_per_parcel=1)
                 apt_preprocess.process_with_bfp_parcel(parcel_shapefile=parcel_shp, bfp_per_parcel=2)
                 # apt_preprocess.process_apt_with_bfp_parcel(parcel_shapefile=parcel_shp, bfp_per_parcel=3)
+        logger.info("Process completed in {} min.".format(round((time.time()-stime)/60.0,2)))
+        gutils.combine_all_processed_data(osp.join(args.path, args.out),filename=args.schema)
+
     else:
         apt_preprocess.process_with_bfp(out_fname=args.fname)
 
