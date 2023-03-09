@@ -46,7 +46,7 @@ class ImproveAPAScore:
         if bfp_per_parcel >= 2:
             process_df = process_df.groupby(['PRCLDMPID'], as_index=False).apply(
                 lambda x: pd.Series(self.process_apt_with_multi_bfp(x, bfp_count=bfp_per_parcel)))
-
+        print("Shape of process df {}".format(process_df.shape))
         process_df['apt_on_bfp'] = process_df.apply(lambda x: self.apt_at_rooftop(x), axis=1)
         process_df['apt_bfp_dist'] = process_df.apply(lambda x: self.get_apt_to_bfp_distance(x), axis=1)
 
@@ -176,7 +176,7 @@ class ImproveAPAScore:
 
     @staticmethod
     def merge_data(apt_realignment_dir_path):
-        data = []
+        data = list()
         pkl_files = glob(apt_realignment_dir_path + '/*/*.pkl')
         for pkl in pkl_files:
             df = pd.read_pickle(pkl)
@@ -187,30 +187,29 @@ class ImproveAPAScore:
 
 
 def main(args):
-    parcels_data = list()
-    pkl_file = [os.path.join(args.path, pkl_file) for pkl_file in os.listdir(args.path) if pkl_file.startswith('APT')]
-    try:
+    pkl_file = [os.path.join(args.path, pkl_file) for pkl_file in os.listdir(args.path) if
+                pkl_file.startswith('APT') and pkl_file.endswith('.shp')]
+
+    if pkl_file.__len__()!=0:
         logger.info("{} APT data found. Accessing file".format(len(pkl_file)))
         mnr_df = pd.read_pickle(pkl_file.pop())
         mnr_geo_dataframe = gpd.GeoDataFrame(mnr_df, geometry='apt_geometry', crs="EPSG:4326")
         logger.info("APT data found with {} data points".format(mnr_df.shape[0]))
-    except IndexError as err:
-        logger.error("{} Pkl file not available.Extracting from MNR Database".format(err))
+    else:
+        logger.error("Pkl file not available.Extracting from MNR Database")
         stime = time.time()
         mnr_database = ExtractMNRData(country_code=args.schema)
         mnr_database.connect_to_server()
         mnr_geo_dataframe = mnr_database.extract_apt_addresses_data()
-        logger.info("APT dataframe created..{}".format(round(time.time() - stime), 2))
-
-    parcel_path = osp.join(args.path, 'parcel_data')
-    if osp.isdir(parcel_path):
-        parcels_data = [pzip for pzip in os.listdir(parcel_path) if pzip.endswith('.zip')]
+        logger.info("APT dataframe created in {} min".format(round(time.time() - stime) / 60, 2))
 
     apt_preprocess = ImproveAPAScore(building_shapefile=osp.join(args.path, args.msft_bfp),
                                      mnr_apt_data=mnr_geo_dataframe,
                                      output_path=osp.join(args.path, args.out)
                                      )
-    if len(parcels_data) > 0:
+    if args.parcel:
+        parcel_path = osp.join(args.path,args.parcel)
+        parcels_data = [pzip for pzip in os.listdir(parcel_path) if pzip.endswith('.zip')]
         logger.info("Number of Parcel data found {}:".format(len(parcels_data)))
         stime = time.time()
         for parcel_file in parcels_data:
@@ -234,19 +233,22 @@ def main(args):
                                                        filename=args.fname)
                 logger.info("Process completed in {} min.".format(round((time.time() - stime) / 60.0, 2)))
                 gutils.combine_all_processed_data(osp.join(args.path, args.out), filename=args.schema)
-            else:
-                apt_preprocess.process_with_bfp(out_fname=args.fname)
+    else:
+        logger.info("processing with only BFP")
+        apt_preprocess.process_with_bfp(out_fname=args.fname)
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=
                                      'Create Realigned Matrix of APTs using MNR APT databse, DMP Parcels '
                                      'and Building footprint')
-    parser.add_argument('-p', '--path', type=str, required=True, help='Path to the data')
+    parser.add_argument('-i', '--path', type=str, required=True, help='Path to the data')
     parser.add_argument('-s', '--schema', type=str, required=True,
                         help='name of the schema to run APT_process')
     parser.add_argument('-m', '--msft_bfp', type=str, required=True,
                         help='name of the BFP file in geojson/shp')
     parser.add_argument('-o', '--out', type=str, default='mnr_apt_data', help='output path')
+    parser.add_argument('-p', '--parcel', type=str, default=None, help='Parcel Path')
     parser.add_argument('-f', '--fname', type=str, default='updated_APT_matrix', help="output filename")
     args = parser.parse_args()
     main(args)
